@@ -1,15 +1,16 @@
-Alpinaluz Listing Generator V14.4
+Alpinaluz Listing Generator V14.6
 
-执行：
+主要修复：
+1. 进一步统一深色界面，修复白底白字、按钮 hover 难读、上传控件浅色模式显示问题。
+2. 多语言标题增加两种方式：
+   - 本地SEO润色（推荐）：更像当地 Amazon 标题，不是机械直译。
+   - 严格翻译ES标题（最快）：更快、更贴近 ES 标题。
+3. 多语言标题继续保持事实与 ES 标题一致，不从事实卡重新乱生成。
+4. 修复常见标题格式问题：USB-A / USB-C 大小写、3000K、28 cm、重复 Foco Orientable、德语 integrierter LED、荷兰语 draaibare。
+5. 增加“生成完成声音提示”，长时间生成完会弹 toast 并尝试播放提示音。
+
+运行：
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
-
-V14.4 重点：
-- 统一深色界面：黑底浅字，输入框、预览框、字数检测都保持高对比度。
-- 标题格式增加 4 种样式：自然亚马逊标题、结构化特性标题、SEO长标题、简洁安全标题。
-- 默认改为自然亚马逊标题，避免标题像机械参数表或关键词堆砌。
-- 每个候选标题可快速转换成任意样式，再按局部修改要求继续优化。
-- 保留多语言标题校验：禁中文、禁占位符、禁西语残留、禁SKU误删USB-C/USB-A。
-- 修复/保留 CCT 3000K/4000K/6000K 完整性。

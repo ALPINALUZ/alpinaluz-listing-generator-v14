@@ -7,17 +7,18 @@ from datetime import date
 from typing import Dict, List, Tuple, Any
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 try:
     from openai import OpenAI
 except Exception:
     OpenAI = None
 
-st.set_page_config(page_title="Alpinaluz Listing Generator V14.4", layout="wide")
+st.set_page_config(page_title="Alpinaluz Listing Generator V14.6", layout="wide")
 
 st.markdown("""
 <style>
-/* V14.4 统一深色界面：黑底浅字，高对比度预览 */
+/* V14.5 统一深色界面：黑底浅字，高对比度预览，兼容浏览器浅色模式 */
 :root { --bg:#0b0f17; --panel:#111827; --panel2:#1f2937; --text:#f3f4f6; --muted:#cbd5e1; --line:#374151; }
 html, body, .stApp, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
 [data-testid="stHeader"], [data-testid="stToolbar"] { background: rgba(11,15,23,.95) !important; }
@@ -41,6 +42,88 @@ section[data-testid="stExpander"] { background: var(--panel) !important; border:
 .fact-card, .dark-card { background: var(--panel) !important; color: var(--text) !important; border: 1px solid var(--line) !important; border-radius: 12px !important; padding: 12px !important; }
 .stat-ok { background:#052e16 !important; color:#dcfce7 !important; padding:8px 12px; border-radius:8px; margin:4px 0; border:1px solid #166534; }
 .stat-bad { background:#3f1212 !important; color:#fee2e2 !important; padding:8px 12px; border-radius:8px; margin:4px 0; border:1px solid #991b1b; }
+
+/* V14.5 强制按钮、下拉、标签在浅色模式也清晰 */
+.stButton button, .stDownloadButton button, button[kind="primary"], button[kind="secondary"] {
+    background-color: #1f2937 !important;
+    color: #f8fafc !important;
+    border: 1px solid #475569 !important;
+    font-weight: 600 !important;
+}
+.stButton button:hover, .stDownloadButton button:hover {
+    background-color: #334155 !important;
+    color: #ffffff !important;
+    border-color: #60a5fa !important;
+}
+[data-baseweb="tag"] {
+    background-color: #ef4444 !important;
+    color: #ffffff !important;
+}
+[data-baseweb="popover"], [data-baseweb="menu"] {
+    background-color: #111827 !important;
+    color: #f8fafc !important;
+}
+[role="option"] { background-color: #111827 !important; color: #f8fafc !important; }
+[role="option"]:hover { background-color: #334155 !important; color: #ffffff !important; }
+textarea, input { caret-color: #f8fafc !important; }
+
+
+/* V14.6 进一步修复白底白字 / hover 难读 / 上传控件浅色问题 */
+* { box-sizing: border-box; }
+.stApp, .main, .block-container { color: #f8fafc !important; }
+[data-testid="stFileUploader"], [data-testid="stFileUploaderDropzone"] {
+    background: #111827 !important;
+    color: #f8fafc !important;
+    border: 1px dashed #475569 !important;
+    border-radius: 10px !important;
+}
+[data-testid="stFileUploaderDropzone"] * { color: #f8fafc !important; }
+[data-testid="stFileUploader"] button, [data-testid="stFileUploader"] small {
+    background: #1f2937 !important;
+    color: #f8fafc !important;
+}
+[data-testid="stFileUploaderFileName"], [data-testid="stFileUploaderFileSize"], [data-testid="stFileUploaderDeleteBtn"] {
+    color: #f8fafc !important;
+}
+textarea, input, select, div[contenteditable="true"] {
+    background-color: #111827 !important;
+    color: #f8fafc !important;
+    -webkit-text-fill-color: #f8fafc !important;
+}
+textarea:focus, input:focus, div[data-baseweb="select"]:focus-within {
+    background-color: #0f172a !important;
+    color: #ffffff !important;
+    border-color: #60a5fa !important;
+}
+.stTextArea label, .stTextInput label, .stSelectbox label, .stMultiSelect label, .stRadio label, .stCheckbox label {
+    color: #f8fafc !important;
+}
+.stRadio div[role="radiogroup"] label, .stCheckbox label, .stMultiSelect [data-baseweb="tag"] span {
+    color: #f8fafc !important;
+}
+[data-baseweb="select"] * { color: #f8fafc !important; }
+[data-baseweb="select"] input { color: #f8fafc !important; -webkit-text-fill-color: #f8fafc !important; }
+[data-baseweb="menu"] li, [role="listbox"] [role="option"] {
+    background: #111827 !important;
+    color: #f8fafc !important;
+}
+[data-baseweb="menu"] li:hover, [role="listbox"] [role="option"]:hover, [aria-selected="true"] {
+    background: #334155 !important;
+    color: #ffffff !important;
+}
+.stButton button:disabled, .stDownloadButton button:disabled {
+    background: #111827 !important;
+    color: #94a3b8 !important;
+    border-color: #334155 !important;
+}
+.stAlert, [data-testid="stAlert"] {
+    background: #111827 !important;
+    color: #f8fafc !important;
+    border: 1px solid #334155 !important;
+}
+.stCaptionContainer, .stCaptionContainer * { color: #cbd5e1 !important; }
+hr { border-color: #334155 !important; }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -217,6 +300,13 @@ VALUE_MAP.setdefault("方向调节", {}).update({
     "350°旋转": {"ES":"orientable 350°","FR":"orientable à 350°","DE":"350° schwenkbar","IT":"orientabile a 350°","NL":"350° draaibaar","PL":"obrotowy 350°","PT":"orientável 350°","SE":"vridbar 350°","EN":"350° rotatable"},
     "多角度调节": {"ES":"orientable en múltiples ángulos","FR":"orientable multi-angle","DE":"mehrwinklig verstellbar","IT":"orientabile multi-angolo","NL":"meerdere hoeken verstelbaar","PL":"regulacja wielokątowa","PT":"orientável em vários ângulos","SE":"justerbar i flera vinklar","EN":"multi-angle adjustable"},
 })
+VALUE_MAP.setdefault("方向调节", {}).update({
+    "高自由度多角度调节": {"ES":"orientable 360°","FR":"orientable à 360°","DE":"360° drehbar","IT":"orientabile a 360°","NL":"360° draaibaar","PL":"obrotowy 360°","PT":"orientável 360°","SE":"360° vridbar","EN":"360° adjustable"}
+})
+VALUE_MAP.setdefault("安装方式", {}).update({
+    "台面": {"ES":"de sobremesa","FR":"à poser","DE":"Tischaufstellung","IT":"da appoggio","NL":"tafelmodel","PL":"na biurko","PT":"de mesa","SE":"för bord","EN":"tabletop"},
+    "落地": {"ES":"de pie","FR":"sur pied","DE":"stehend","IT":"da terra","NL":"staand","PL":"stojąca","PT":"de pé","SE":"stående","EN":"floor standing"}
+})
 VALUE_MAP.setdefault("光色调节", {}).update({
     "无": {lang:"" for lang in LANGS},
     "三档CCT 3000K/4000K/6000K": {"ES":"CCT 3000K/4000K/6000K","FR":"CCT 3000K/4000K/6000K","DE":"CCT 3000K/4000K/6000K","IT":"CCT 3000K/4000K/6000K","NL":"CCT 3000K/4000K/6000K","PL":"CCT 3000K/4000K/6000K","PT":"CCT 3000K/4000K/6000K","SE":"CCT 3000K/4000K/6000K","EN":"CCT 3000K/4000K/6000K"},
@@ -321,6 +411,9 @@ def init_state() -> None:
         "selected_title_idx": 0,
         "content_safety_strict": True,
         "image_light_effect_required": False,
+        "foreign_title_mode": "本地SEO润色（推荐）",
+        "sound_notify": True,
+        "notify_after_multilang": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -405,53 +498,79 @@ def raw_input_blob() -> str:
 
 
 def postprocess_facts(facts: Dict[str, Any]) -> Dict[str, Any]:
-    """规则层兜底：修正集成LED/CCT/调节能力等 AI 容易自相矛盾的事实。"""
+    """规则层兜底：事实优先，避免 AI 根据图片/旧事实误判 LED/CCT/E27。"""
     facts = dict(facts or {})
-    blob = (raw_input_blob() + "\n" + json.dumps(facts, ensure_ascii=False)).lower()
+    raw_blob = raw_input_blob().lower()
+    ai_blob = json.dumps(facts, ensure_ascii=False).lower()
+    full_blob = raw_blob + "\n" + ai_blob
 
-    led_markers = [
+    socket_match = re.search(r"\b(e27|e14|gu10|g9|g4|gx53)\b", raw_blob, flags=re.I)
+    explicit_integrated_led = any(m in raw_blob for m in [
         "led integrado", "integrated led", "led intégr", "led integr", "内置led", "集成led",
-        "cct", "3000k", "4000k", "6000k", "selector de temperatura", "temperatura de color", "色温", "6w led"
-    ]
-    is_integrated_led = any(m in blob for m in led_markers)
-    if is_integrated_led:
-        facts["是否LED"] = "LED集成"
-        facts["灯头"] = "LED integrado"
-        facts["是否含灯泡"] = "不适用（LED集成）"
-        # 集成LED产品不能再写 E27/GU10 等传统灯头，除非事实里同时明确“compatible con GU10 bombilla”
-        if not re.search(r"compatible\s+con\s+(e27|e14|gu10|g9)|兼容\s*(e27|e14|gu10|g9)", blob):
-            facts["灯头"] = "LED integrado"
+        "módulo led", "modulo led", "chip led", "led 6w", "6w led", "cct", "selector de temperatura", "temperatura de color"
+    ])
+    traditional_socket_context = bool(socket_match) and any(m in raw_blob for m in [
+        "bombilla no incluida", "no incluye bombilla", "compatible con bombillas", "casquillo", "portalámparas", "socket", "douille", "fassung", "attacco"
+    ])
 
-    if any(x in blob for x in ["3000k", "4000k", "6000k", "cct", "色温", "temperatura de color"]):
+    if traditional_socket_context and not explicit_integrated_led:
+        socket = socket_match.group(1).upper()
+        facts["灯头"] = socket
+        facts["是否LED"] = "兼容LED灯泡"
+        facts["是否含灯泡"] = "否"
+        if not re.search(r"\b(3000k|4000k|6000k|cct|temperatura de color|色温)\b", raw_blob, flags=re.I):
+            facts["色温K"] = ""
+            facts["光色调节"] = "无"
+            facts["亮度调节"] = "未提供"
+    else:
+        led_markers_raw = [
+            "led integrado", "integrated led", "led intégr", "led integr", "内置led", "集成led",
+            "módulo led", "modulo led", "chip led", "6w led", "led 6w"
+        ]
+        cct_markers_raw = ["cct", "3000k", "4000k", "6000k", "selector de temperatura", "temperatura de color", "色温"]
+        is_integrated_led = any(m in raw_blob for m in led_markers_raw) or (any(m in raw_blob for m in cct_markers_raw) and not socket_match)
+        if is_integrated_led:
+            facts["是否LED"] = "LED集成"
+            facts["灯头"] = "LED integrado"
+            facts["是否含灯泡"] = "不适用（LED集成）"
+
+    if any(x in raw_blob for x in ["3000k", "4000k", "6000k", "cct", "色温", "temperatura de color"]):
         facts.setdefault("色温K", "3000K/4000K/6000K")
         if not facts.get("光色调节") or facts.get("光色调节") in {"无", ""}:
             facts["光色调节"] = "三档CCT 3000K/4000K/6000K"
-        # CCT不是亮度调光，除非明确写 dimmable/regulable intensidad
-        if not re.search(r"dimmable|regulable en intensidad|调亮度|调光|brightness", blob):
+        if not re.search(r"dimmable|regulable en intensidad|调亮度|调光|brightness", raw_blob):
             facts["亮度调节"] = "未提供"
+    elif facts.get("光色调节") and "CCT" in str(facts.get("光色调节")):
+        facts["光色调节"] = "无"
+        facts["色温K"] = ""
 
-    if "350" in blob or "350°" in blob or "350º" in blob:
+    if "360" in full_blob or "360°" in full_blob or "360º" in full_blob:
+        facts["方向调节"] = "高自由度多角度调节"
+        facts["调节能力"] = "高自由度多角度调节"
+    elif "350" in full_blob or "350°" in full_blob or "350º" in full_blob:
         facts["方向调节"] = "350°旋转"
         facts["调节能力"] = "可定向调节"
-    elif any(x in blob for x in ["orientable", "rotatable", "schwenk", "orientável", "可调", "可旋转"]):
+    elif any(x in full_blob for x in ["orientable", "rotatable", "schwenk", "orientável", "可调", "可旋转"]):
         facts.setdefault("方向调节", "可定向调节")
         facts.setdefault("调节能力", "可定向调节")
 
-    if any(x in blob for x in ["usb-c", "usb c", "type-c", "type c", "usb y usb-c", "usb和usb-c"]):
+    if any(x in raw_blob for x in ["foco de cine", "cinematográfico", "estilo cinema", "retro cinema", "trípode", "tripode", "filmspot", "电影", "三脚架"]):
+        facts["风格"] = ["Vintage", "Retro Cinema", "工业"]
+        facts["禁用风格词"] = "现代、极简、moderno、minimalista"
+
+    if any(x in raw_blob for x in ["usb-c", "usb c", "type-c", "type c", "usb y usb-c", "usb和usb-c"]):
         tags = normalize_to_list(facts.get("用途标签"))
         for t in ["USB充电", "床头阅读", "功能型壁灯"]:
             if t not in tags:
                 tags.append(t)
         facts["用途标签"] = "、".join(tags)
 
-    # 如果有托盘/置物功能，加入用途标签
-    if any(x in blob for x in ["bandeja", "tray", "plateau", "ablage", "hylla", "托盘", "置物", "28cm", "28 cm"]):
+    if any(x in raw_blob for x in ["bandeja", "tray", "plateau", "ablage", "hylla", "托盘", "置物", "28cm", "28 cm"]):
         tags = normalize_to_list(facts.get("用途标签"))
         if "收纳托盘" not in tags:
             tags.append("收纳托盘")
         facts["用途标签"] = "、".join(tags)
 
-    # 风格不要只局限一个现代，功能型产品补用途标签，不强行加极简
     styles = normalize_to_list(facts.get("风格"))
     if "现代" in styles and "极简" in normalize_to_list(facts.get("禁用风格词")):
         styles = [x for x in styles if x != "极简"]
@@ -516,6 +635,39 @@ def llm_multimodal(prompt: str, files: List[Any], system: str = "You identify li
     )
     return resp.choices[0].message.content.strip()
 
+
+
+def notify_done(message: str = "生成完成") -> None:
+    """Browser-side beep + toast after long generation. Autoplay may depend on browser settings, but click-triggered Streamlit actions usually allow it."""
+    try:
+        st.toast(message)
+    except Exception:
+        pass
+    if not st.session_state.get("sound_notify", True):
+        return
+    components.html(
+        """
+        <script>
+        (function(){
+          try {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            const ctx = new AudioContext();
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = 'sine';
+            o.frequency.setValueAtTime(880, ctx.currentTime);
+            g.gain.setValueAtTime(0.001, ctx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.28);
+            o.connect(g); g.connect(ctx.destination);
+            o.start(); o.stop(ctx.currentTime + 0.30);
+          } catch(e) {}
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 def safe_json(raw: str, fallback):
     txt = str(raw or "").strip()
@@ -885,9 +1037,22 @@ def normalize_title_units(title: str) -> str:
     t = re.sub(r"(\d+)\s*w\b", r"\1W", t, flags=re.I)
     t = re.sub(r"(\d+)\s*cm\b", r"\1 cm", t, flags=re.I)
     t = re.sub(r"(\d+)\s*mm\b", r"\1 mm", t, flags=re.I)
-    t = t.replace("Usb", "USB").replace("usb", "USB").replace("Led", "LED").replace("led", "LED").replace("Cct", "CCT").replace("cct", "CCT")
-    t = t.replace("Usb-C", "USB-C").replace("Usb-A", "USB-A")
-    t = re.sub(r"\s+", " ", t).strip()
+    # Tech tokens: preserve normal Amazon spelling.
+    t = re.sub(r"\bUSB\s*[- ]?\s*A\b", "USB-A", t, flags=re.I)
+    t = re.sub(r"\bUSB\s*[- ]?\s*C\b", "USB-C", t, flags=re.I)
+    t = re.sub(r"\btype\s*[- ]?\s*A\b", "Type A", t, flags=re.I)
+    t = re.sub(r"\btype\s*[- ]?\s*C\b", "Type C", t, flags=re.I)
+    t = re.sub(r"\bLed\b", "LED", t, flags=re.I)
+    t = re.sub(r"\bCct\b", "CCT", t, flags=re.I)
+    # Remove common duplication caused by title generation.
+    t = re.sub(r"(?i)\b(Foco\s+Orientable)\s+\1\b", r"\1", t)
+    t = re.sub(r"(?i)\b(spot\s+orientable)\s+\1\b", r"\1", t)
+    t = re.sub(r"(?i)\b(orientable)\s+\1\b", r"\1", t)
+    # Language-specific grammar/typo hotfixes from repeated tests.
+    t = t.replace("mit integrierte LED", "mit integrierter LED")
+    t = t.replace("draaibaare", "draaibare")
+    t = t.replace("USB-a", "USB-A").replace("USB-c", "USB-C")
+    t = re.sub(r"\s+", " ", t).strip(" ,;-–—")
     return t
 
 ALLOWED_HYPHEN_CODES = {"USB-C", "USB-A", "TYPE-C", "TYPE-A", "WI-FI"}
@@ -1352,6 +1517,80 @@ def extract_section(text: str, tag: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def source_es_title(es_master: str) -> str:
+    title_block = extract_section(es_master, "TITLE")
+    return title_block.splitlines()[0].strip() if title_block else ""
+
+
+def foreign_title_from_es(lang: str, es_title: str) -> str:
+    """Translate/localize the locked ES title only. This prevents foreign titles from drifting to wrong facts."""
+    es_title = clean_title_candidate(es_title)
+    if not es_title:
+        return ""
+    cache = st.session_state.setdefault("title_translation_cache", {})
+    cache_key = f"{lang}::{es_title}::{st.session_state.get('max_title', 200)}::{st.session_state.get('foreign_title_mode', '本地SEO润色（推荐）')}"
+    if cache_key in cache:
+        return cache[cache_key]
+    max_len = int(st.session_state.get("max_title", 200))
+    mode = st.session_state.get("foreign_title_mode", "本地SEO润色（推荐）")
+    if mode.startswith("严格"):
+        localize_instruction = "Translate accurately and keep the ES title order as much as possible, but make grammar natural."
+        temp = 0.10
+    else:
+        localize_instruction = "Rewrite as a native high-converting Amazon title for the local marketplace. You may reorder phrases to match local search habits, but must keep the same facts. Do not sound like a machine translation."
+        temp = 0.22
+    prompt = f"""
+Translate/localize this locked Amazon.es title into native {LANGS[lang]['name']} for {LANGS[lang]['market']}.
+
+ES title source:
+{es_title}
+
+Localization mode:
+{localize_instruction}
+
+Rules:
+- Keep EXACTLY the same product facts and commercial meaning as the ES title.
+- Do NOT add specifications that are not present in the ES title. If the ES title has no CCT/3000K/4000K/6000K, do not add CCT. If it has no tray/bandeja, do not add tray.
+- Do NOT remove important facts from the ES title: product type, style, material/colour, socket/LED, adjustment, room/use.
+- Native Amazon marketplace style, readable and commercial, not a raw keyword chain.
+- Avoid mechanical labels such as "CCT:", "Spot:", "Charging:", "Tray:" unless they are natural in that language.
+- Prefer a natural title like: Brand + product type + key style/function + socket/LED + material/colour + main use.
+- No Chinese, no Spanish leftovers unless the term is a universal code such as E27, LED, USB-C, IP20.
+- No SKU/model code.
+- <= {max_len} characters. Shorter is acceptable if complete and natural.
+- EN uses Amazon Title Case. DE uses natural German capitalization. FR/IT/PT/NL/PL/SE use native marketplace style.
+- Fix obvious grammar, capitalization and unit format: USB-A, USB-C, 3000K, 28 cm.
+Return ONLY the final title, one line.
+"""
+    raw = llm(prompt, system="You are a native Amazon marketplace title localizer for lighting products. Return one polished title only.", temperature=temp)
+    title = normalize_title_style(clean_title_candidate(raw.splitlines()[0]), lang)
+    title = clean_variants(title, lang, "TITLE")
+    if not title_is_valid(title, lang):
+        raw = llm(prompt + "\nCRITICAL: previous title failed validation. Output a clean native title with no Chinese, no placeholders, no added specs.", system="Strict marketplace title translator. One line only.", temperature=0.05)
+        title = normalize_title_style(clean_variants(clean_title_candidate(raw.splitlines()[0]), lang, "TITLE"), lang)
+    if not title_is_valid(title, lang):
+        title = build_safe_title(lang)
+    cache[cache_key] = title
+    return title
+
+
+def title_has_extra_specs_vs_es(title: str, es_title: str) -> bool:
+    """Avoid foreign titles adding wrong specs due to fact-card errors."""
+    t = str(title or "").lower()
+    e = str(es_title or "").lower()
+    spec_groups = [
+        ["cct", "3000k", "4000k", "6000k"],
+        ["usb", "usb-a", "usb-c", "type-c"],
+        ["bandeja", "tray", "plateau", "ablage", "hylla", "półka", "vassoio"],
+        ["350°", "350"],
+        ["360°", "360"],
+    ]
+    for group in spec_groups:
+        if any(g in t for g in group) and not any(g in e for g in group):
+            return True
+    return False
+
+
 def parse_numbered_lines(block: str) -> List[str]:
     block = str(block or "")
     lines = []
@@ -1645,7 +1884,14 @@ def build_core_prompt(lang: str, es_master: str = "", locked_title: str = "") ->
     title_rule = f"Use this exact title: {locked_title}" if locked_title else f"Generate a natural complete title between {min_title}-{max_title} characters."
     es_extra = "Generate the Spanish master version first."
     if lang != "ES":
-        es_extra = f"Use the ES master below as strategy, but rewrite natively for {market}; do NOT literally translate and do not mix Spanish words into the target language.\n\nES MASTER:\n{es_master}"
+        es_title_only = source_es_title(es_master)
+        es_extra = f"""Use the ES master below as the only source of product strategy.
+IMPORTANT FOR TITLE: the target-language TITLE must be a native localized version of this exact Spanish title, with the same facts and no extra specs:
+{es_title_only}
+Do not create the title from the fact card if it conflicts with the ES title. Bullets, description and A+ should follow the ES master closely but sound native for {market}. Do NOT mix Spanish words into the target language.
+
+ES MASTER:
+{es_master}"""
     return f"""
 Write native Amazon listing copy for {market} in {LANGS[lang]['name']}.
 
@@ -1744,18 +1990,30 @@ def core_has_language_errors(lang: str, core: Dict[str, Any]) -> List[str]:
 def generate_core(lang: str, es_master: str = "", locked_title: str = "") -> Dict[str, Any]:
     base_prompt = build_core_prompt(lang, es_master, locked_title)
     last_errs = []
-    for attempt in range(3):
+    # V14.5: 多语言默认快速生成。标题单独从 ES 标题对齐，正文只重试一次，速度比旧版明显快。
+    max_attempts = 3 if lang == "ES" else (1 if st.session_state.get("fast_multilang", True) else 2)
+    es_title = source_es_title(es_master) if lang != "ES" else ""
+    aligned_title = foreign_title_from_es(lang, es_title) if (lang != "ES" and es_title) else ""
+
+    for attempt in range(max_attempts):
         prompt = base_prompt
         if attempt > 0:
             prompt += "\n\nCRITICAL RETRY: Previous output failed validation: " + "; ".join(last_errs) + "\nRewrite all fields natively in the target language, remove placeholders/Chinese/Spanish leftovers, and keep title valid."
-        raw = llm(prompt, system="You write native Amazon listing JSON for lighting products. Output valid JSON only.", temperature=0.32 if attempt else 0.38)
+        raw = llm(prompt, system="You write native Amazon listing JSON for lighting products. Output valid JSON only.", temperature=0.26 if lang != "ES" else (0.32 if attempt else 0.38))
         core = safe_json(raw, {"title": "", "bullets": ["", "", "", "", ""], "description": "", "search_terms": "", "aplus": ""})
+        if lang != "ES" and aligned_title:
+            core["title"] = aligned_title
         core = sanitize_core(lang, core, locked_title=locked_title if lang == "ES" else "")
+        if lang != "ES" and es_title and (title_has_extra_specs_vs_es(core.get("title", ""), es_title) or has_cjk(core.get("title", ""))):
+            core["title"] = foreign_title_from_es(lang, es_title)
         last_errs = core_has_language_errors(lang, core)
+        # 如果只有标题问题且有 ES 对齐标题，直接用对齐标题通过，不重试整篇，提升速度。
+        if lang != "ES" and aligned_title:
+            last_errs = [e for e in last_errs if "标题" not in e]
         if not last_errs:
             return core
-    # 最后兜底：至少保证标题不是坏的，其他内容保留最后一次清洗结果。
-    core["title"] = build_safe_title(lang)
+
+    core["title"] = aligned_title or build_safe_title(lang)
     core["title"] = ensure_title(core["title"], lang, facts_for_prompt(lang))
     core["aplus"] = normalize_aplus_text(core.get("aplus", ""))
     return core
@@ -1842,6 +2100,9 @@ with st.sidebar:
     st.text_input("OpenAI API Key", type="password", key="openai_api_key")
     st.selectbox("模型", ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"], key="model")
     st.radio("使用模式", ["新手模式", "专业模式"], key="mode", help="新手模式：先识别事实卡，再生成标题候选和ES母版。专业模式：保留更多可调项。")
+    st.checkbox("快速多语言生成（推荐）", key="fast_multilang", value=True, help="锁定ES后，各国正文少重试，速度更快。标题仍会按下面的方式生成。")
+    st.selectbox("多语言标题方式", ["本地SEO润色（推荐）", "严格翻译ES标题（最快）"], key="foreign_title_mode", help="本地SEO润色：标题更自然，更像当地Amazon；严格翻译：速度更快、更贴近ES标题。")
+    st.checkbox("生成完成声音提示", key="sound_notify", value=st.session_state.get("sound_notify", True), help="长时间等待多语言生成时，完成后播放一声提示。部分浏览器可能需要允许声音。")
     st.divider()
     st.markdown("### 长度控制")
     st.number_input("标题最小字符", min_value=80, max_value=220, key="min_title")
@@ -1858,8 +2119,8 @@ with st.sidebar:
         st.session_state["uploaded_images"] = []
         st.success("已清空图片")
 
-st.title("Alpinaluz Listing Generator V14.4")
-st.caption("新手/专业双模式 · 产品事实卡 · ES标题候选评分 · 平台安全检查 · A+场景/特性结构")
+st.title("Alpinaluz Listing Generator V14.6")
+st.caption("新手/专业双模式 · ES标题对齐多语言 · 产品事实卡 · 平台安全检查 · A+场景/特性结构")
 
 if st.session_state.get("mode") == "新手模式":
     st.info("新手流程：①上传资料 → ②AI识别产品事实卡 → ③确认事实 → ④生成3个ES标题候选 → ⑤选择标题生成ES母版 → ⑥锁定后生成各国版本。")
@@ -1972,6 +2233,7 @@ with col1:
                 st.session_state["title_candidates"] = generate_es_title_candidates()
                 st.session_state["title_candidate_details"] = generate_title_candidate_details(st.session_state["title_candidates"])
                 st.session_state["selected_title_idx"] = 0
+                notify_done("ES标题候选已生成")
         except Exception as e:
             st.error(str(e))
 with col2:
@@ -1992,6 +2254,7 @@ with col2:
                 st.session_state["es_explain"] = explain
                 st.session_state["es_text"] = compose_listing("ES", core, explain)
                 st.session_state["es_locked"] = False
+                notify_done("ES母版已生成")
         except Exception as e:
             st.error(str(e))
 with col3:
@@ -2080,6 +2343,7 @@ if st.button("生成各国版本"):
                     explain = generate_explain(lang, core["title"], core["bullets"], core["description"], core["search_terms"])
                     localized[lang] = compose_listing(lang, core, explain)
             st.session_state["localized_texts"] = localized
+            notify_done("多语言版本已生成")
         except Exception as e:
             st.error(str(e))
 
