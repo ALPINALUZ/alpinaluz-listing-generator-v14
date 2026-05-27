@@ -15,7 +15,7 @@ try:
 except Exception:
     OpenAI = None
 
-st.set_page_config(page_title="Alpinaluz Listing Generator V16.0", layout="wide")
+st.set_page_config(page_title="Alpinaluz Listing Generator V16.1", layout="wide")
 
 st.markdown("""
 <style>
@@ -991,18 +991,38 @@ def field_card_lines() -> List[str]:
     return rows
 
 
+def image_exclude_key(file_obj: Any, idx: int) -> str:
+    """Return a unique Streamlit widget key for an uploaded image.
+
+    Streamlit file_uploader allows multiple files with the same filename, for example
+    image.jpg, image.jpg. Using only file.name as widget key causes
+    StreamlitDuplicateElementKey. Include the index and file size to keep keys unique.
+    """
+    name = getattr(file_obj, "name", f"image_{idx}") or f"image_{idx}"
+    size = getattr(file_obj, "size", "")
+    return f"exclude_img::{idx}::{name}::{size}"
+
+
+def image_is_excluded(file_obj: Any, idx: int) -> bool:
+    # V16.1 uses unique keys. Keep backward compatibility with old name-only keys
+    # for users who already checked exclusions before updating.
+    unique_key = image_exclude_key(file_obj, idx)
+    legacy_key = f"exclude_img::{getattr(file_obj, 'name', '')}"
+    return bool(st.session_state.get(unique_key, st.session_state.get(legacy_key, False)))
+
+
 def image_names_for_prompt() -> str:
     files = st.session_state.get("uploaded_images", []) or []
     if not files:
         return ""
     excluded = []
     used = []
-    for f in files:
-        key = f"exclude_img::{f.name}"
-        if st.session_state.get(key):
-            excluded.append(f.name)
+    for idx, f in enumerate(files):
+        name = getattr(f, "name", f"image_{idx}")
+        if image_is_excluded(f, idx):
+            excluded.append(name)
         else:
-            used.append(f.name)
+            used.append(name)
     out = []
     if used:
         out.append("Used images: " + ", ".join(used))
@@ -1021,7 +1041,7 @@ def image_analysis_limit() -> int:
 
 def images_for_analysis() -> List[Any]:
     files = st.session_state.get("uploaded_images", []) or []
-    return [f for f in files if not st.session_state.get(f"exclude_img::{f.name}")]
+    return [f for idx, f in enumerate(files) if not image_is_excluded(f, idx)]
 
 
 def facts_for_prompt(lang: str = "ES") -> str:
@@ -3943,8 +3963,8 @@ with st.sidebar:
         st.session_state["uploaded_images"] = []
         st.success("已清空图片")
 
-st.title("Alpinaluz Listing Generator V16.0")
-st.caption("GPT-5.4日常主力 · 批量多语言提速 · 标题本地化优化 · 原文保留增强 · 可扩展Mirakl平台")
+st.title("Alpinaluz Listing Generator V16.1")
+st.caption("GPT-5.4日常主力 · 修复重复图片名报错 · 批量多语言提速 · 原文保留增强 · 可扩展Mirakl平台")
 
 if st.session_state.get("mode") == "新手模式":
     st.info("新手流程：①上传资料 → ②AI识别产品事实卡 → ③确认事实 → ④生成3个ES标题候选 → ⑤选择标题生成ES母版 → ⑥锁定后生成各国版本。")
@@ -3968,8 +3988,14 @@ with left:
         st.session_state["uploaded_images"] = files
     if st.session_state.get("uploaded_images"):
         st.markdown("**图片用途检查**")
-        for f in st.session_state["uploaded_images"]:
-            st.checkbox(f"排除这张图用于事实识别：{f.name}", key=f"exclude_img::{f.name}", help="比如带灯泡详情、尺寸不对应、有Logo、不是当前SKU的图。")
+        for idx, f in enumerate(st.session_state["uploaded_images"]):
+            img_name = getattr(f, "name", f"image_{idx}")
+            st.checkbox(
+                f"排除这张图用于事实识别：{idx + 1}. {img_name}",
+                key=image_exclude_key(f, idx),
+                value=image_is_excluded(f, idx),
+                help="比如带灯泡详情、尺寸不对应、有Logo、不是当前SKU的图。即使多张图片同名，也不会再报错。",
+            )
         st.checkbox("至少需要一张有光效/光斑的场景图", key="image_light_effect_required")
 
 with right:
