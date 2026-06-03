@@ -15,7 +15,7 @@ try:
 except Exception:
     OpenAI = None
 
-st.set_page_config(page_title="Alpinaluz Listing Generator V16.1", layout="wide")
+st.set_page_config(page_title="Alpinaluz Listing Generator V16.6", layout="wide")
 
 st.markdown("""
 <style>
@@ -470,7 +470,6 @@ EXTRA_FACT_FIELDS = ["尺寸", "直径", "高度", "宽度", "最大功率W", "�
 def init_state() -> None:
     defaults = {
         "model": "gpt-5.4",
-        "final_title_model": "gpt-5.5",
         "ai_title_explanations": False,
         "image_analysis_mode": "标准：分析前3张图（推荐）",
         "targets": ALL_TARGETS.copy(),
@@ -500,12 +499,16 @@ def init_state() -> None:
         "selected_title_idx": 0,
         "content_safety_strict": True,
         "image_light_effect_required": False,
-        "foreign_title_mode": "本地SEO润色（推荐）",
+        "foreign_title_mode": "语义骨架本地化（推荐，快且稳）",
         "multilang_generation_mode": "批量合并生成（推荐，快）",
-        "multilang_batch_size": 4,
+        "multilang_batch_size": 8,
         "multilang_only_missing": False,
         "sound_notify": True,
         "notify_after_multilang": False,
+        "api_usage_log": [],
+        "last_title_zh": "",
+        "last_title_zh_source": "",
+        "export_quality_files": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -714,6 +717,90 @@ def _response_text(resp: Any) -> str:
     return str(resp).strip()
 
 
+
+# ------------------------ Token / cost tracking ------------------------
+# These are estimated API prices used only for an internal cost dashboard.
+# If OpenAI changes pricing, adjust here; the UI labels this as an estimate.
+MODEL_PRICES_USD_PER_1M = {
+    "gpt-5.5": {"input": 5.00, "output": 30.00},
+    "gpt-5.4": {"input": 2.50, "output": 15.00},
+    "gpt-5.4-mini": {"input": 0.75, "output": 4.50},
+    "gpt-4.1": {"input": 2.00, "output": 8.00},
+}
+
+def _get_usage_tokens(resp: Any) -> Tuple[int, int]:
+    usage = getattr(resp, "usage", None)
+    if usage is None and isinstance(resp, dict):
+        usage = resp.get("usage")
+    if usage is None:
+        return 0, 0
+    def pick(obj, *names):
+        for n in names:
+            if isinstance(obj, dict) and n in obj:
+                return obj.get(n) or 0
+            if hasattr(obj, n):
+                return getattr(obj, n) or 0
+        return 0
+    inp = pick(usage, "input_tokens", "prompt_tokens")
+    out = pick(usage, "output_tokens", "completion_tokens")
+    return int(inp or 0), int(out or 0)
+
+def estimate_text_tokens(text: str) -> int:
+    # conservative mixed Chinese/Latin estimate; only used when API usage is unavailable
+    text = text or ""
+    return max(1, int(len(text) / 3.2)) if text else 0
+
+def record_api_usage(label: str, model: str, resp: Any = None, input_hint: str = "", output_hint: str = "", image_count: int = 0) -> None:
+    inp, out = _get_usage_tokens(resp) if resp is not None else (0, 0)
+    estimated = False
+    if not inp and not out:
+        inp = estimate_text_tokens(input_hint) + image_count * 1200
+        out = estimate_text_tokens(output_hint)
+        estimated = True
+    base = model if model in MODEL_PRICES_USD_PER_1M else str(model).split(":")[0]
+    price = MODEL_PRICES_USD_PER_1M.get(base, MODEL_PRICES_USD_PER_1M.get("gpt-5.4"))
+    cost = (inp / 1_000_000) * price["input"] + (out / 1_000_000) * price["output"]
+    st.session_state.setdefault("api_usage_log", []).append({
+        "label": label, "model": model, "input_tokens": inp, "output_tokens": out,
+        "cost": cost, "estimated": estimated, "image_count": image_count,
+    })
+
+def usage_totals() -> Dict[str, Any]:
+    logs = st.session_state.get("api_usage_log", []) or []
+    return {
+        "calls": len(logs),
+        "input_tokens": sum(int(x.get("input_tokens", 0)) for x in logs),
+        "output_tokens": sum(int(x.get("output_tokens", 0)) for x in logs),
+        "cost": sum(float(x.get("cost", 0)) for x in logs),
+    }
+
+def render_usage_dashboard() -> None:
+    totals = usage_totals()
+    st.markdown("### Token / 费用仪表盘")
+    st.caption("估算值：优先读取 API 返回的 usage；若未返回则按文本长度粗估。用于判断哪里烧钱，不作为最终账单。")
+    c1, c2 = st.columns(2)
+    c1.metric("本轮调用", totals["calls"])
+    c2.metric("估算费用", f"${totals['cost']:.3f}")
+    st.caption(f"输入 {totals['input_tokens']:,} tokens / 输出 {totals['output_tokens']:,} tokens")
+    logs = st.session_state.get("api_usage_log", [])[-8:]
+    if logs:
+        with st.expander("查看最近调用明细", expanded=False):
+            for x in reversed(logs):
+                mark = "估" if x.get("estimated") else "实"
+                st.write(f"{mark} · {x.get('label')} · {x.get('model')} · in {x.get('input_tokens'):,} / out {x.get('output_tokens'):,} · ${x.get('cost',0):.3f}")
+    if st.button("清空费用统计"):
+        st.session_state["api_usage_log"] = []
+        st.rerun()
+
+def cheap_title_zh(title: str) -> str:
+    if not title.strip():
+        return ""
+    prompt = f"""请把下面的 Amazon 西班牙标题翻译成简体中文，用一句话解释给中国运营同事看。
+要求：只翻译标题事实，不新增卖点，不要解释规则。
+标题：{title}
+"""
+    return llm(prompt, system="You translate marketplace titles into concise Simplified Chinese for internal review.", model_override="gpt-5.4-mini", reasoning_effort_override="medium").strip()
+
 def llm(prompt: str, system: str = "You are a senior Amazon marketplace SEO copywriter for lighting products.", temperature: float = 0.35, model_override: str = None, reasoning_effort_override: str = None) -> str:
     client = get_client()
     if client is None:
@@ -732,17 +819,23 @@ def llm(prompt: str, system: str = "You are a senior Amazon marketplace SEO copy
             kwargs["reasoning"] = {"effort": effort}
         try:
             resp = client.responses.create(**kwargs)
-            return _response_text(resp)
+            out_text = _response_text(resp)
+            record_api_usage("文本生成", model, resp, input_hint=system + "\n" + prompt, output_hint=out_text)
+            return out_text
         except TypeError:
             kwargs.pop("reasoning", None)
             resp = client.responses.create(**kwargs)
-            return _response_text(resp)
+            out_text = _response_text(resp)
+            record_api_usage("文本生成", model, resp, input_hint=system + "\n" + prompt, output_hint=out_text)
+            return out_text
     resp = client.chat.completions.create(
         model=model,
         temperature=temperature,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
     )
-    return resp.choices[0].message.content.strip()
+    out_text = resp.choices[0].message.content.strip()
+    record_api_usage("文本生成", model, resp, input_hint=system + "\n" + prompt, output_hint=out_text)
+    return out_text
 
 
 def llm_multimodal(prompt: str, files: List[Any], system: str = "You identify lighting product facts from text and images.") -> str:
@@ -768,12 +861,15 @@ def llm_multimodal(prompt: str, files: List[Any], system: str = "You identify li
             ],
             "reasoning": {"effort": st.session_state.get("reasoning_effort", "high")},
         }
+        used_images = min(len(files or []), image_analysis_limit())
         try:
             resp = client.responses.create(**kwargs)
         except TypeError:
             kwargs.pop("reasoning", None)
             resp = client.responses.create(**kwargs)
-        return _response_text(resp)
+        out_text = _response_text(resp)
+        record_api_usage("图片/事实识别", model, resp, input_hint=system + "\n" + prompt, output_hint=out_text, image_count=used_images)
+        return out_text
     content = [{"type": "text", "text": prompt}]
     for f in files[:image_analysis_limit()]:
         try:
@@ -788,7 +884,9 @@ def llm_multimodal(prompt: str, files: List[Any], system: str = "You identify li
         temperature=0.15,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
     )
-    return resp.choices[0].message.content.strip()
+    out_text = resp.choices[0].message.content.strip()
+    record_api_usage("图片/事实识别", model, resp, input_hint=system + "\n" + prompt, output_hint=out_text, image_count=min(len(files or []), image_analysis_limit()))
+    return out_text
 
 
 
@@ -934,11 +1032,18 @@ def strip_series_from_title(title: str) -> str:
     if not series:
         return t
     # 支持 TOURS / Mini Gala 等多词系列名，大小写不敏感。
+    # V16.6: do not break descriptive words that happen to equal a series name.
+    # Example: series SUNSET should be removed as a standalone model name, but not from
+    # "Sunset-Effect Glass Globe", otherwise the title becomes "with -Effect Glass Globe".
     patterns = [re.escape(series)]
     if " " in series:
         patterns.append(re.escape(series.replace(" ", "")))
+    series_low = series.strip().lower()
     for pat in patterns:
-        t = re.sub(rf"(?i)(?<![A-Za-z0-9]){pat}(?![A-Za-z0-9])", "", t)
+        if series_low == "sunset":
+            t = re.sub(rf"(?i)(?<![A-Za-z0-9]){pat}(?!\s*[- ]?\s*effect)(?![A-Za-z0-9])", "", t)
+        else:
+            t = re.sub(rf"(?i)(?<![A-Za-z0-9]){pat}(?![A-Za-z0-9])", "", t)
     t = re.sub(r"\s{2,}", " ", t)
     t = re.sub(r"\s+([,.;:])", r"\1", t)
     t = re.sub(r",\s*,", ",", t)
@@ -1004,7 +1109,7 @@ def image_exclude_key(file_obj: Any, idx: int) -> str:
 
 
 def image_is_excluded(file_obj: Any, idx: int) -> bool:
-    # V16.1 uses unique keys. Keep backward compatibility with old name-only keys
+    # V16.2 uses unique keys. Keep backward compatibility with old name-only keys
     # for users who already checked exclusions before updating.
     unique_key = image_exclude_key(file_obj, idx)
     legacy_key = f"exclude_img::{getattr(file_obj, 'name', '')}"
@@ -1085,6 +1190,56 @@ def facts_for_prompt(lang: str = "ES") -> str:
     return "\n".join(f"- {k}: {v}" for k, v in facts.items() if str(v).strip())
 
 
+
+
+
+def title_context_for_prompt(lang: str = "ES") -> str:
+    """Compact, high-signal context used ONLY for title generation.
+    V16.2: the title generator must behave like the chat workflow that works well:
+    one clear original title + one image/fact summary, not the whole long listing.
+    Do not feed long descriptions, A+ style prose, cable micro-specs or bulb-exclusion text into title prompts.
+    """
+    def short(v, n=260):
+        v = re.sub(r"\s+", " ", str(v or "")).strip()
+        return v[:n]
+
+    # Only one visible commercial size should influence the title.
+    main_size = size_phrase_for_title(lang) or clean_size_value(get_fact("直径") or get_fact("尺寸") or get_fact("高度") or "")
+    if main_size:
+        # Prefer diameter or one compact size; avoid secondary dimensions such as cable/base/wall distance.
+        m = re.search(r"Ø?\s*\d+(?:[.,]\d+)?\s*cm", str(main_size), flags=re.I)
+        main_size = normalize_title_units(m.group(0)) if m else normalize_title_units(str(main_size))
+
+    title_allowed = {
+        "Brand": st.session_state.get("brand", "Alpinaluz") or "Alpinaluz",
+        "Original title to improve": short(st.session_state.get("manual_title", ""), 320),
+        "Product type": map_value("产品类型", get_field("产品类型"), lang),
+        "Main visible material": map_value("材质", get_field("材质"), lang),
+        "Main visible color / finish": map_value("颜色", get_field("颜色"), lang),
+        "Shade / body color": short(", ".join([x for x in [get_fact("灯罩颜色"), get_fact("灯体颜色"), get_fact("底座颜色")] if x]), 160),
+        "Main visible size for title": main_size,
+        "Socket or integrated light": map_value("灯头", get_field("灯头"), lang),
+        "Max wattage only if useful": clean_power_value(get_fact("最大功率W")),
+        "Recommended bulb shape only if useful": short(get_fact("推荐灯泡"), 80),
+        "Core style": map_value("风格", get_field("风格"), lang),
+        "Main rooms": map_value("适用空间", get_field("适用空间"), lang),
+        "High-value SEO keywords from user": short(st.session_state.get("keywords", ""), 220),
+        "Confirmed must-title keywords": short(", ".join(st.session_state.get("title_must_keywords", []) or []), 220),
+        "Forbidden title keywords": short(", ".join(st.session_state.get("title_banned_keywords", []) or []), 220),
+    }
+    allowed_lines = [f"- {k}: {v}" for k, v in title_allowed.items() if str(v).strip()]
+
+    # Explicit negative instructions: these details are useful, but for bullets/description, not title.
+    do_not_use = [
+        "bombilla no incluida / sin bombilla / no incluye bombilla",
+        "compatible / compatible con bombillas / compatible con LED",
+        "ideal para / perfecto para / bonito / precioso",
+        "longitud de cable y cable 2.4 m; interruptor en cable/de pie solo si NO es un atributo comercial principal",
+        "base Ø, distancia a pared, brazo, altura total, pared-separación, medidas secundarias",
+        "instalación sencilla, incluye accesorios, montaje fácil",
+        "series name unless explicitly allowed",
+    ]
+    return "\n".join(allowed_lines) + "\n\nDo NOT use in the TITLE:\n- " + "\n- ".join(do_not_use)
 
 def original_copy_policy_prompt() -> str:
     mode = st.session_state.get("source_quality_mode", "优质原文保留增强（推荐）")
@@ -1317,12 +1472,343 @@ def fix_foreign_title_residuals(title: str, lang: str) -> str:
 def normalize_title_style(title: str, lang: str) -> str:
     title = commercial_title_clean(remove_title_low_value_phrases(normalize_title_units(clean_title_candidate(title))))
     title = fix_foreign_title_residuals(title, lang)
+    title = fix_broken_title_fragments(title, lang)
     if lang == "ES":
         return normalize_title_units(spanish_title_case(title))
     if lang == "EN":
         return normalize_title_units(title_case_en_like(title))
     # 其他欧洲语言不要强行全词首大写，交给模型；只修正常见缩写和单位。
     return normalize_title_units(title)
+
+
+
+def fix_broken_title_fragments(title: str, lang: str = "") -> str:
+    """V16.6: hard guard against broken localized title fragments like 'with -Effect' or 'mit -Leuchtmitteln'."""
+    t = str(title or "")
+    if not t:
+        return t
+    # Common broken fragments from batch localization.
+    t = re.sub(r"(?i)\bwith\s+-\s*effect\b", "with sunset-effect", t)
+    t = re.sub(r"(?i)\bwith\s+-effect\b", "with sunset-effect", t)
+    t = re.sub(r"(?i)\bmit\s+-\s*leuchtmitteln\b", "mit G9-LED-Leuchtmitteln", t)
+    t = re.sub(r"(?i)\bmit\s+-leuchtmitteln\b", "mit G9-LED-Leuchtmitteln", t)
+    t = re.sub(r"(?i)\bcompatibel\s+mit\s+-\s*leuchtmitteln\b", "kompatibel mit G9-LED-Leuchtmitteln", t)
+    t = re.sub(r"(?i)\bcompatible\s+with\s+-\s*bulbs\b", "compatible with G9 LED bulbs", t)
+    t = re.sub(r"\s+", " ", t).strip(" ,;-–—")
+    return t
+
+
+def extract_es_title_skeleton(es_title: str) -> Dict[str, Any]:
+    """Parse the final ES title into a compact semantic skeleton.
+    V16.6 uses this for foreign titles instead of free-generation or tri-state keyword tables.
+    """
+    t = normalize_title_units(str(es_title or ""))
+    low = t.lower()
+    brand = st.session_state.get("brand", "Alpinaluz") or "Alpinaluz"
+
+    # Product type from the locked ES title, with fact-card fallback.
+    if re.search(r"aplique|l[aá]mpara\s+mural|wall\s+light", low):
+        product_key = "wall_light"
+    elif re.search(r"l[aá]mpara\s+colgante|colgante|suspensi[oó]n", low):
+        product_key = "pendant_light"
+    elif re.search(r"l[aá]mpara\s+de\s+mesa|sobremesa", low):
+        product_key = "table_lamp"
+    elif re.search(r"l[aá]mpara\s+de\s+pie|pie\b", low):
+        product_key = "floor_lamp"
+    elif re.search(r"plaf[oó]n|techo", low):
+        product_key = "ceiling_light"
+    else:
+        f = str(get_field("产品类型") or "")
+        if "壁" in f or "aplique" in f.lower(): product_key = "wall_light"
+        elif "吊" in f or "colg" in f.lower(): product_key = "pendant_light"
+        elif "桌" in f or "mesa" in f.lower(): product_key = "table_lamp"
+        elif "落地" in f or "pie" in f.lower(): product_key = "floor_lamp"
+        elif "吸顶" in f or "techo" in f.lower(): product_key = "ceiling_light"
+        else: product_key = "light"
+
+    size = ""
+    m = re.search(r"Ø\s*\d+(?:[.,]\d+)?\s*cm(?:\s*[x×]\s*\d+(?:[.,]\d+)?\s*cm)?", t, flags=re.I)
+    if not m:
+        m = re.search(r"\b\d+(?:[.,]\d+)?\s*(?:x|×)\s*\d+(?:[.,]\d+)?\s*cm\b", t, flags=re.I)
+    if m:
+        size = normalize_title_units(m.group(0))
+
+    material_key = ""
+    if re.search(r"vidrio\s+multicolor|cristal\s+multicolor|glass\s+multicol", low):
+        material_key = "multicolor_glass"
+    elif re.search(r"cristal\s+opal|vidrio\s+opal|opalino|opaco", low):
+        material_key = "opal_glass"
+    elif re.search(r"rat[aá]n", low):
+        material_key = "rattan"
+    elif re.search(r"mimbre", low):
+        material_key = "wicker"
+    elif re.search(r"bamb[uú]", low):
+        material_key = "bamboo"
+    elif re.search(r"madera", low):
+        material_key = "wood"
+    elif re.search(r"metal|acero|hierro", low):
+        material_key = "metal"
+
+    effect_key = ""
+    if re.search(r"atardecer|sunset|puesta\s+de\s+sol", low):
+        effect_key = "sunset_effect"
+    elif re.search(r"efecto\s+m[aá]rmol|marmol", low):
+        effect_key = "marble_effect"
+    elif re.search(r"efecto\s+sombra|sombras", low):
+        effect_key = "shadow_effect"
+
+    finish_key = ""
+    if re.search(r"dorado|oro|gold", low):
+        finish_key = "gold_metal_base" if re.search(r"base|soporte|metal", low) else "gold_finish"
+    elif re.search(r"negro|black", low):
+        finish_key = "black_finish"
+    elif re.search(r"blanco|white", low):
+        finish_key = "white_finish"
+
+    socket = ""
+    ms = re.search(r"\b(E27|G9|GU10|E14|G45)\b", t, flags=re.I)
+    if ms:
+        socket = ms.group(1).upper()
+    elif re.search(r"led\s+integrado|LED integrado", t, flags=re.I):
+        socket = "LED integrado"
+
+    style_keys = []
+    for key, pats in {
+        "modern": [r"moderno", r"moderna"],
+        "nordic": [r"n[oó]rdic"],
+        "vintage": [r"vintage", r"retro"],
+        "rustic": [r"r[uú]stic"],
+        "industrial": [r"industrial"],
+        "boho": [r"boho", r"bohem"],
+    }.items():
+        if any(re.search(p, low) for p in pats):
+            style_keys.append(key)
+    style_keys = style_keys[:2]
+
+    room_keys = []
+    room_patterns = [
+        ("living", [r"sal[oó]n", r"living"]),
+        ("bedroom", [r"dormitorio", r"habitaci[oó]n", r"chambre", r"bedroom"]),
+        ("dining", [r"comedor", r"jantar", r"dining"]),
+        ("hallway", [r"pasillo", r"corredor", r"recibidor", r"entrada", r"hall"]),
+        ("kitchen", [r"cocina", r"kitchen"]),
+        ("office", [r"oficina", r"estudio"]),
+    ]
+    for key, pats in room_patterns:
+        if any(re.search(p, low) for p in pats):
+            room_keys.append(key)
+    if not room_keys:
+        froom = str(get_field("适用空间") or "")
+        if "客厅" in froom or "sal" in froom.lower(): room_keys.append("living")
+        if "卧" in froom or "dorm" in froom.lower(): room_keys.append("bedroom")
+        if "餐" in froom or "com" in froom.lower(): room_keys.append("dining")
+        if "走" in froom or "pas" in froom.lower(): room_keys.append("hallway")
+    room_keys = room_keys[:3]
+
+    return {
+        "brand": brand,
+        "product_key": product_key,
+        "size": size,
+        "material_key": material_key,
+        "effect_key": effect_key,
+        "finish_key": finish_key,
+        "socket": socket,
+        "style_keys": style_keys,
+        "room_keys": room_keys,
+    }
+
+
+PRODUCT_TERMS = {
+    "wall_light": {"EN":"Wall Light", "FR":"applique murale", "DE":"Wandleuchte", "IT":"applique da parete", "NL":"wandlamp", "PL":"kinkiet", "PT":"aplique de parede", "SE":"vägglampa"},
+    "pendant_light": {"EN":"Pendant Light", "FR":"suspension", "DE":"Pendelleuchte", "IT":"lampada a sospensione", "NL":"hanglamp", "PL":"lampa wisząca", "PT":"candeeiro suspenso", "SE":"pendellampa"},
+    "table_lamp": {"EN":"Table Lamp", "FR":"lampe de table", "DE":"Tischleuchte", "IT":"lampada da tavolo", "NL":"tafellamp", "PL":"lampa stołowa", "PT":"candeeiro de mesa", "SE":"bordslampa"},
+    "floor_lamp": {"EN":"Floor Lamp", "FR":"lampadaire", "DE":"Stehleuchte", "IT":"lampada da terra", "NL":"vloerlamp", "PL":"lampa podłogowa", "PT":"candeeiro de pé", "SE":"golvlampa"},
+    "ceiling_light": {"EN":"Ceiling Light", "FR":"plafonnier", "DE":"Deckenleuchte", "IT":"plafoniera", "NL":"plafondlamp", "PL":"lampa sufitowa", "PT":"candeeiro de teto", "SE":"taklampa"},
+    "light": {"EN":"Light", "FR":"luminaire", "DE":"Leuchte", "IT":"lampada", "NL":"lamp", "PL":"lampa", "PT":"candeeiro", "SE":"lampa"},
+}
+
+MATERIAL_TERMS = {
+    "multicolor_glass": {"EN":"multicolour glass", "FR":"verre multicolore", "DE":"mehrfarbigem Glas", "IT":"vetro multicolore", "NL":"meerkleurig glas", "PL":"wielokolorowego szkła", "PT":"vidro multicolor", "SE":"flerfärgat glas"},
+    "opal_glass": {"EN":"opal white glass", "FR":"verre opalin blanc", "DE":"opalweißem Glas", "IT":"vetro bianco opalino", "NL":"opaalwit glas", "PL":"białego szkła opalowego", "PT":"vidro branco opalino", "SE":"opalvitt glas"},
+    "rattan": {"EN":"natural rattan", "FR":"rotin naturel", "DE":"natürlichem Rattan", "IT":"rattan naturale", "NL":"natuurlijk rotan", "PL":"naturalnego rattanu", "PT":"rattan natural", "SE":"naturrotting"},
+    "wicker": {"EN":"natural wicker", "FR":"osier naturel", "DE":"natürlichem Weidengeflecht", "IT":"vimini naturale", "NL":"natuurlijk riet", "PL":"naturalnej wikliny", "PT":"vime natural", "SE":"naturlig pil"},
+    "bamboo": {"EN":"natural bamboo", "FR":"bambou naturel", "DE":"natürlichem Bambus", "IT":"bambù naturale", "NL":"natuurlijk bamboe", "PL":"naturalnego bambusa", "PT":"bambu natural", "SE":"naturbambu"},
+    "wood": {"EN":"wood", "FR":"bois", "DE":"Holz", "IT":"legno", "NL":"hout", "PL":"drewna", "PT":"madeira", "SE":"trä"},
+    "metal": {"EN":"metal", "FR":"métal", "DE":"Metall", "IT":"metallo", "NL":"metaal", "PL":"metalu", "PT":"metal", "SE":"metall"},
+}
+
+EFFECT_TERMS = {
+    "sunset_effect": {"EN":"Sunset-Effect Glass Globe", "FR":"globe en verre effet coucher de soleil", "DE":"Glaskugel im Sonnenuntergangseffekt", "IT":"globo in vetro effetto tramonto", "NL":"glazen bol met zonsondergangeffect", "PL":"szklana kula z efektem zachodu słońca", "PT":"globo de vidro efeito pôr do sol", "SE":"glasklot med solnedgångseffekt"},
+    "marble_effect": {"EN":"marble-effect finish", "FR":"effet marbre", "DE":"Marmoroptik", "IT":"effetto marmo", "NL":"marmerlook", "PL":"efekt marmuru", "PT":"efeito mármore", "SE":"marmoreffekt"},
+    "shadow_effect": {"EN":"decorative shadow effect", "FR":"effet d’ombres décoratif", "DE":"dekorativem Schattenspiel", "IT":"effetto ombra decorativo", "NL":"decoratief schaduweffect", "PL":"dekoracyjny efekt cieni", "PT":"efeito de sombras decorativo", "SE":"dekorativ skuggeffekt"},
+}
+
+FINISH_TERMS = {
+    "gold_metal_base": {"EN":"gold-tone metal base", "FR":"base en métal doré", "DE":"goldfarbener Metallbasis", "IT":"base in metallo dorato", "NL":"goudkleurige metalen basis", "PL":"złota metalowa podstawa", "PT":"base metálica dourada", "SE":"guldfärgad metallbas"},
+    "gold_finish": {"EN":"gold-tone finish", "FR":"finition dorée", "DE":"goldfarbener Oberfläche", "IT":"finitura dorata", "NL":"goudkleurige afwerking", "PL":"złote wykończenie", "PT":"acabamento dourado", "SE":"guldfärgad finish"},
+    "black_finish": {"EN":"black finish", "FR":"finition noire", "DE":"schwarzer Oberfläche", "IT":"finitura nera", "NL":"zwarte afwerking", "PL":"czarne wykończenie", "PT":"acabamento preto", "SE":"svart finish"},
+    "white_finish": {"EN":"white finish", "FR":"finition blanche", "DE":"weißer Oberfläche", "IT":"finitura bianca", "NL":"witte afwerking", "PL":"białe wykończenie", "PT":"acabamento branco", "SE":"vit finish"},
+}
+
+STYLE_TERMS = {
+    "modern": {"EN":"modern", "FR":"moderne", "DE":"modern", "IT":"moderna", "NL":"modern", "PL":"nowoczesny", "PT":"moderno", "SE":"modern"},
+    "nordic": {"EN":"Nordic", "FR":"nordique", "DE":"nordisch", "IT":"nordico", "NL":"Scandinavisch", "PL":"skandynawski", "PT":"nórdico", "SE":"nordisk"},
+    "vintage": {"EN":"vintage", "FR":"vintage", "DE":"Vintage", "IT":"vintage", "NL":"vintage", "PL":"vintage", "PT":"vintage", "SE":"vintage"},
+    "rustic": {"EN":"rustic", "FR":"rustique", "DE":"rustikal", "IT":"rustico", "NL":"rustiek", "PL":"rustykalny", "PT":"rústico", "SE":"rustik"},
+    "industrial": {"EN":"industrial", "FR":"industriel", "DE":"industriell", "IT":"industriale", "NL":"industrieel", "PL":"industrialny", "PT":"industrial", "SE":"industriell"},
+    "boho": {"EN":"boho", "FR":"bohème", "DE":"Boho", "IT":"boho", "NL":"boho", "PL":"boho", "PT":"boho", "SE":"boho"},
+}
+
+ROOM_TERMS = {
+    "living": {"EN":"Living Room", "FR":"salon", "DE":"Wohnzimmer", "IT":"soggiorno", "NL":"woonkamer", "PL":"salonu", "PT":"sala", "SE":"vardagsrum"},
+    "bedroom": {"EN":"Bedroom", "FR":"chambre", "DE":"Schlafzimmer", "IT":"camera da letto", "NL":"slaapkamer", "PL":"sypialni", "PT":"quarto", "SE":"sovrum"},
+    "dining": {"EN":"Dining Room", "FR":"salle à manger", "DE":"Esszimmer", "IT":"sala da pranzo", "NL":"eetkamer", "PL":"jadalni", "PT":"sala de jantar", "SE":"matsal"},
+    "hallway": {"EN":"Hallway", "FR":"couloir", "DE":"Flur", "IT":"corridoio", "NL":"hal", "PL":"korytarza", "PT":"corredor", "SE":"hall"},
+    "kitchen": {"EN":"Kitchen", "FR":"cuisine", "DE":"Küche", "IT":"cucina", "NL":"keuken", "PL":"kuchni", "PT":"cozinha", "SE":"kök"},
+    "office": {"EN":"Office", "FR":"bureau", "DE":"Arbeitszimmer", "IT":"ufficio", "NL":"kantoor", "PL":"biura", "PT":"escritório", "SE":"arbetsrum"},
+}
+
+
+def local_join_terms(values: List[str], lang: str) -> str:
+    return join_native([v for v in values if v], lang, 3)
+
+
+def title_from_semantic_skeleton(lang: str, es_title: str) -> str:
+    """Fast deterministic local title from final ES title semantic skeleton.
+    This prevents expensive/free LLM localization from adding/breaking facts.
+    """
+    if lang == "ES":
+        return normalize_title_style(es_title, "ES")
+    sk = extract_es_title_skeleton(es_title)
+    brand = sk["brand"]
+    product = PRODUCT_TERMS.get(sk["product_key"], PRODUCT_TERMS["light"]).get(lang, PRODUCT_TERMS["light"]["EN"])
+    material = MATERIAL_TERMS.get(sk["material_key"], {}).get(lang, "")
+    effect = EFFECT_TERMS.get(sk["effect_key"], {}).get(lang, "")
+    finish = FINISH_TERMS.get(sk["finish_key"], {}).get(lang, "")
+    socket = sk.get("socket", "")
+    style = local_join_terms([STYLE_TERMS.get(k, {}).get(lang, "") for k in sk.get("style_keys", [])], lang)
+    rooms = local_join_terms([ROOM_TERMS.get(k, {}).get(lang, "") for k in sk.get("room_keys", [])], lang)
+    size = sk.get("size", "")
+
+    if lang == "EN":
+        parts = [f"{brand} {material.title() + ' ' if material else ''}{product}"]
+        if size: parts[0] += f" {size}"
+        if effect: parts.append(f"with {effect}")
+        if finish: parts.append(finish.title())
+        if socket: parts.append(f"{socket} Fitting")
+        if style: parts.append(f"{style} Style")
+        if rooms: parts.append(f"for {rooms}")
+    elif lang == "DE":
+        parts = [f"{brand} {product}"]
+        if material: parts[0] += f" aus {material}"
+        if size: parts[0] += f" {size}"
+        if effect: parts.append(f"mit {effect}")
+        if finish: parts.append(finish)
+        if socket: parts.append(f"{socket}-Fassung")
+        if style: parts.append(f"{style}er Stil")
+        if rooms: parts.append(f"für {rooms}")
+    elif lang == "FR":
+        parts = [f"{brand} {product}"]
+        if material: parts[0] += f" en {material}"
+        if size: parts[0] += f" {size}"
+        if effect: parts.append(f"avec {effect}")
+        if finish: parts.append(finish)
+        if socket: parts.append(f"douille {socket}")
+        if style: parts.append(f"style {style}")
+        if rooms: parts.append(f"pour {rooms}")
+    elif lang == "IT":
+        parts = [f"{brand} {product}"]
+        if material: parts[0] += f" in {material}"
+        if size: parts[0] += f" {size}"
+        if effect: parts.append(f"con {effect}")
+        if finish: parts.append(finish)
+        if socket: parts.append(f"attacco {socket}")
+        if style: parts.append(f"stile {style}")
+        if rooms: parts.append(f"per {rooms}")
+    elif lang == "NL":
+        parts = [f"{brand} {product}"]
+        if material: parts[0] += f" van {material}"
+        if size: parts[0] += f" {size}"
+        if effect: parts.append(f"met {effect}")
+        if finish: parts.append(finish)
+        if socket: parts.append(f"{socket}-fitting")
+        if style: parts.append(f"{style} stijl")
+        if rooms: parts.append(f"voor {rooms}")
+    elif lang == "PL":
+        parts = [f"{brand} {product}"]
+        if material: parts[0] += f" z {material}"
+        if size: parts[0] += f" {size}"
+        if effect: parts.append(effect)
+        if finish: parts.append(finish)
+        if socket: parts.append(f"oprawka {socket}")
+        if style: parts.append(f"styl {style}")
+        if rooms: parts.append(f"do {rooms}")
+    elif lang == "PT":
+        parts = [f"{brand} {product}"]
+        if material: parts[0] += f" em {material}"
+        if size: parts[0] += f" {size}"
+        if effect: parts.append(f"com {effect}")
+        if finish: parts.append(finish)
+        if socket: parts.append(f"casquilho {socket}")
+        if style: parts.append(f"estilo {style}")
+        if rooms: parts.append(f"para {rooms}")
+    elif lang == "SE":
+        parts = [f"{brand} {product}"]
+        if material: parts[0] += f" i {material}"
+        if size: parts[0] += f" {size}"
+        if effect: parts.append(f"med {effect}")
+        if finish: parts.append(finish)
+        if socket: parts.append(f"{socket}-sockel")
+        if style: parts.append(f"{style} stil")
+        if rooms: parts.append(f"för {rooms}")
+    else:
+        parts = [f"{brand} {product}"]
+
+    title = ", ".join([p for p in parts if p])
+    title = fix_broken_title_fragments(localize_foreign_leftovers(title, lang), lang)
+    title = normalize_title_style(fix_broken_title_fragments(title, lang), lang)
+    max_len = int(st.session_state.get("max_title", 200))
+    if len(title) > max_len:
+        # Drop low-priority tail pieces before truncating.
+        for drop in range(1, 5):
+            shorter = ", ".join([p for p in parts[:-drop] if p])
+            shorter = normalize_title_style(fix_broken_title_fragments(localize_foreign_leftovers(shorter, lang), lang), lang)
+            if shorter and len(shorter) <= max_len and len(shorter) >= 95:
+                title = shorter
+                break
+    if len(title) > max_len:
+        title = title[:max_len].rsplit(" ", 1)[0].strip(" ,;-–—")
+    if not title.lower().startswith(brand.lower()):
+        title = f"{brand} {title}"
+    return normalize_title_style(fix_broken_title_fragments(title, lang), lang)
+
+
+def title_cn_from_skeleton(lang: str, title: str) -> str:
+    """Cheap deterministic title explanation for Chinese colleagues.
+    Prevents batch model artifacts like “此标题按要求原样保留” and stays synced with the final title.
+    """
+    sk = extract_es_title_skeleton(st.session_state.get("locked_es_title") or st.session_state.get("selected_es_title") or title)
+    pieces = ["Alpinaluz"]
+    product_cn = {
+        "wall_light": "壁灯", "pendant_light": "吊灯", "table_lamp": "台灯",
+        "floor_lamp": "落地灯", "ceiling_light": "吸顶灯", "light": "灯具"
+    }.get(sk.get("product_key"), "灯具")
+    pieces.append(product_cn)
+    material_cn = {
+        "multicolor_glass": "多色玻璃", "opal_glass": "乳白/蛋白玻璃", "rattan": "藤编",
+        "wicker": "藤/柳编", "bamboo": "竹", "wood": "木质", "metal": "金属"
+    }.get(sk.get("material_key"), "")
+    if material_cn: pieces.append(material_cn)
+    if sk.get("size"): pieces.append(sk.get("size"))
+    effect_cn = {"sunset_effect": "日落/晚霞效果", "marble_effect": "大理石效果", "shadow_effect": "装饰光影效果"}.get(sk.get("effect_key"), "")
+    if effect_cn: pieces.append(effect_cn)
+    finish_cn = {"gold_metal_base": "金色金属底座", "gold_finish": "金色表面", "black_finish": "黑色表面", "white_finish": "白色表面"}.get(sk.get("finish_key"), "")
+    if finish_cn: pieces.append(finish_cn)
+    if sk.get("socket"): pieces.append(f"{sk.get('socket')}灯头/光源")
+    room_map = {"living": "客厅", "bedroom": "卧室", "dining": "餐厅", "hallway": "走廊/玄关", "kitchen": "厨房", "office": "办公室/书房"}
+    rooms = [room_map.get(x, x) for x in sk.get("room_keys", [])]
+    if rooms: pieces.append("适用于" + "、".join(rooms))
+    return "，".join([p for p in pieces if p]) + "。"
 
 def remove_water_phrases(title: str) -> str:
     t = title
@@ -1334,10 +1820,17 @@ def remove_water_phrases(title: str) -> str:
 
 
 def remove_title_low_value_phrases(title: str) -> str:
-    """Keep safety wording for bullets, but remove low-value phrases from Amazon titles."""
+    """Keep safety wording for bullets, but remove low-value phrases from Amazon titles.
+    V16.2: title is for SEO/conversion, not compliance details or installation fiche.
+    """
     t = str(title or "")
-    # Title should say E27/G45/40W when useful, but not waste space with 'bulb not included' or 'compatible'.
-    t = re.sub(r"(?i)[,;\s–—-]*(bombilla\s+no\s+incluida|no\s+incluye\s+bombilla|sin\s+bombilla)\b", "", t)
+    # Title should say E27/G45/40W when useful, but not waste space with bulb exclusion, compatibility prose, cable length or installation details.
+    t = re.sub(r"(?i)[,;\s–—-]*(bombillas?\s+no\s+incluidas?|no\s+incluye\s+bombillas?|sin\s+bombillas?|l[aá]mpara\s+sin\s+bombilla)\b", "", t)
+    t = re.sub(r"(?i)[,;\s–—-]*con\s+cable\s+de\s+\d+(?:[.,]\d+)?\s*m(?:etros?)?\b", "", t)
+    t = re.sub(r"(?i)[,;\s–—-]*(cable|cord[oó]n)\s*(?:de|hasta|aprox\.?|:)\s*\d+(?:[.,]\d+)?\s*m(?:etros?)?\b", "", t)
+    t = re.sub(r"(?i)[,;\s–—-]*(interruptor\s+(?:en\s+el\s+cable|de\s+pie|integrado)|incluye\s+accesorios|instalaci[oó]n\s+sencilla|montaje\s+f[aá]cil)\b", "", t)
+    # Remove isolated cable lengths even if the word cable was omitted.
+    t = re.sub(r"(?i)[,;\s–—-]*\b\d+(?:[.,]\d+)?\s*m\b(?=\s*(?:de\s+cable|cable|,|;|$))", "", t)
     t = re.sub(r"(?i)\bcompatible\s+con\s+bombillas?\s+LED\s+de\s+hasta\s+(\d+\s*W)\b", r"hasta \1", t)
     t = re.sub(r"(?i)\bcompatible\s+con\s+bombilla\s+G45\b", "G45", t)
     t = re.sub(r"(?i)\bcompatible\s+con\s+bombillas?\s+LED\b", "", t)
@@ -1808,8 +2301,8 @@ Hard rules:
 - Keep only useful words: brand, product type, style if locked, socket/LED, material/color if relevant, key use/room.
 - Use a readable Amazon title format with separators when useful, e.g. “Product – Feature: detail, Feature: detail”. Do not output a raw list of disconnected keywords.
 
-Product facts:
-{facts}
+Compact title facts:
+{title_context_for_prompt(lang)}
 
 Bad title to rewrite:
 {last}
@@ -1913,7 +2406,7 @@ def foreign_title_is_usable(title: str, lang: str, es_title: str) -> bool:
     max_len = int(st.session_state.get("max_title", 200))
     if len(t) > max_len:
         return False
-    if len(t) < 95 and lang in {"DE", "FR", "IT", "NL", "PL", "PT", "SE", "EN"}:
+    if len(t) < 75 and lang in {"DE", "FR", "IT", "NL", "PL", "PT", "SE", "EN"}:
         return False
     words = re.findall(r"[\wÀ-ÿ]+", t)
     if len(words) < 10:
@@ -2411,7 +2904,8 @@ def score_title_es(title: str) -> Dict[str, Any]:
     check(not find_model_codes(t), "无 SKU / 型号代码", 20)
     check(t.split()[-1].lower().strip(".,;:-–—") not in TRAILING_BAD if t.split() else False, "不是介词/连接词结尾", 20)
     check(not any(re.search(rf"(?i)\b{re.escape(p)}\b", t) for p in WATER_TITLE_PHRASES), "无 ideal para / perfecto para 等水词", 14)
-    check(not re.search(r"(?i)\b(compatible|bombilla\s+no\s+incluida|sin\s+bombilla|no\s+incluye\s+bombilla)\b", t), "标题不写 compatible / 不含灯泡等低价值安全词", 14)
+    check(not re.search(r"(?i)\b(compatible|bombillas?\s+no\s+incluidas?|sin\s+bombilla|no\s+incluye\s+bombilla)\b", t), "标题不写 compatible / 不含灯泡等低价值安全词", 18)
+    check(not re.search(r"(?i)\b(cable\s+de\s+\d|\d+(?:[.,]\d+)?\s*m\b|interruptor\s+(?:en\s+el\s+cable|de\s+pie)|instalaci[oó]n\s+sencilla|incluye\s+accesorios)\b", t), "标题不塞低SEO技术细节：电线长度/开关/安装/配件", 16)
     check(not has_bare_cm(t), "无裸 cm（cm 前必须有具体数字，例如 94-140 cm）", 22)
     check(not re.search(r"\bCm\b|\bMm\b", t), "单位格式正确：cm/mm 小写", 8)
     if get_series_name() and not title_should_include_series():
@@ -2571,8 +3065,11 @@ def generate_es_title_candidates() -> List[str]:
 Genera 4 títulos candidatos para Amazon.es con estilos diferentes.
 
 Estrategia: {st.session_state.get('title_strategy')}
-{original_copy_policy_prompt()}
-Si hay título original/manual y está bien, optimízalo sin destruir su estructura ni eliminar detalles concretos.
+
+CONTEXTO COMPACTO PARA TÍTULO (usar esto como fuente principal; NO arrastrar detalles largos de bullets/description al título):
+{title_context_for_prompt('ES')}
+
+Si hay título original/manual y está bien, mejóralo sin destruir su estructura. El objetivo NO es meter todos los parámetros: el título debe vender y posicionar, no parecer ficha técnica.
 
 Reglas duras:
 - Los 4 títulos deben empezar EXACTAMENTE por Alpinaluz.
@@ -2584,7 +3081,8 @@ Reglas duras:
 - Nunca escribir "cm" sin número concreto delante. Correcto: "94-140 cm"; incorrecto: "Ajustable cm".
 - Usar Title Case español: palabras importantes con inicial mayúscula; de, del, para, con, sin, y, en en minúscula.
 - Crear 4 estilos de alta calidad desde la primera ronda:
-- Título orientado a venta y SEO, no ficha técnica: incluir como máximo 1 dimensión principal visible (por ejemplo Ø18 cm o Ø45 cm). No poner medidas secundarias como distancia a pared, base, longitud de cable, altura total o 65 cm salvo que sean el atributo comercial principal del producto.
+- Título orientado a venta y SEO, no ficha técnica: incluir como máximo 1 dimensión principal visible (por ejemplo Ø18 cm o Ø45 cm). No poner medidas secundarias como distancia a pared, base, brazo, longitud de cable, altura total o 65 cm salvo que sean el atributo comercial principal del producto.
+- No prohibas palabras sueltas por defecto: "interruptor" puede ser keyword útil si es táctil, integrado, USB o función visible; solo evita frases de bajo valor como "interruptor en cable" cuando no sea el principal argumento de venta.
   1) Natural Amazon: fluido, legible, pensado para conversión, sin parecer ficha técnica.
   2) SEO equilibrado: incluye keywords fuertes pero en lenguaje natural.
   3) Diseño/artesanal: enfatiza material, fabricación, estilo y efecto decorativo si son reales.
@@ -2596,8 +3094,8 @@ Reglas duras:
 - Si el producto usa E27/E14/GU10/G9, en el TÍTULO escribe Casquillo E27/GU10/G9 o E27 G45 si aplica, pero NO escribir en título: compatible, bombilla no incluida, sin bombilla.
 - No usar en título palabras vacías: compatible, ideal, perfecto.
 
-Facts:
-{facts_for_prompt('ES')}
+Title facts only:
+{title_context_for_prompt('ES')}
 
 Política de serie para título: {"INCLUIR serie" if title_should_include_series() else "NO incluir serie en título"}.
 
@@ -2661,8 +3159,8 @@ Feedback adicional del usuario:
 Títulos anteriores y problemas:
 {json.dumps(diagnostics, ensure_ascii=False, indent=2)}
 
-Ficha confirmada:
-{facts_for_prompt('ES')}
+Ficha compacta para título:
+{title_context_for_prompt('ES')}
 
 Devuelve JSON:
 {{"candidates":["...","...","...","..."]}}
@@ -3155,78 +3653,41 @@ Return one line only.
 
 
 def foreign_title_from_keyword_strategy(lang: str, es_title: str) -> str:
-    """Generate a native local title from the FINAL locked ES title plus the ES keyword tri-state strategy.
-
-    V15.4: do not enrich from fact card during title localization. The final ES title is truth;
-    must/banned keywords are semantic constraints.
+    """V16.6: stable foreign title from ES semantic skeleton.
+    The old tri-state keyword table is no longer the primary algorithm; it is only an advanced reference.
+    This avoids slow/expensive title localization and broken fragments such as with -Effect / mit -Leuchtmitteln.
     """
     es_title = clean_title_candidate(es_title)
     if not es_title:
         return localized_title_from_facts(lang, es_title)
-    must = [normalize_title_units(str(x).strip()) for x in st.session_state.get("title_must_keywords", []) if str(x).strip()]
-    ban = [normalize_title_units(str(x).strip()) for x in st.session_state.get("title_banned_keywords", []) if str(x).strip()]
-    cache = st.session_state.setdefault("title_translation_cache", {})
     max_len = int(st.session_state.get("max_title", 200))
-    cache_key = f"kwv154::{lang}::{es_title}::{keyword_state_signature()}::{max_len}"
+    cache = st.session_state.setdefault("title_translation_cache", {})
+    cache_key = f"skeleton_v165::{lang}::{es_title}::{max_len}"
     if cache_key in cache:
         return cache[cache_key]
-    brand = st.session_state.get("brand", "Alpinaluz") or "Alpinaluz"
-    must_local = translate_keyword_concepts(must, lang)
-    ban_local = translate_keyword_concepts(ban, lang)
-    prompt = f"""
-Create ONE native Amazon title for {LANGS[lang]['market']} in {LANGS[lang]['name']}.
-
-FINAL locked Spanish title. This is the product truth and final structure:
-{es_title}
-
-Spanish must-keywords chosen by user:
-{json.dumps(must, ensure_ascii=False)}
-
-Localized must concepts to include naturally when true and not contradictory:
-{json.dumps(must_local, ensure_ascii=False)}
-
-Spanish banned keywords chosen by user:
-{json.dumps(ban, ensure_ascii=False)}
-
-Localized banned concepts to exclude completely:
-{json.dumps(ban_local, ensure_ascii=False)}
-
-Hard rules:
-- Title MUST start with exactly: {brand}
-- Native {LANGS[lang]['name']}; no Chinese, no placeholders, no Spanish leftovers except universal codes E27, LED, IP20, USB-C.
-- Follow the final ES title, not the fact card. Do NOT add facts absent from the ES title unless the user selected that concept as must.
-- Do NOT add bedroom/Schlafzimmer/sypialnia/sovrum/quarto if ES title does not contain dormitorio and the user did not select dormitorio.
-- Do NOT add 60W, LED, mimbre/wicker/vimini/osier, bamboo, rooms, dimensions, CCT, USB, tray/shelf, rotation or spotlight unless present in ES title or selected as must.
-- Use selected must concepts as SEO priorities, but write a natural marketplace title, not a raw keyword list.
-- Exclude all negative concepts and obvious local equivalents.
-- Aim for 115-{max_len} characters, never exceed {max_len}. A shorter accurate title is better than adding wrong facts.
-- Keep useful order: brand + product type + material/structure + size + style + socket/compatibility + main rooms/use.
-- Capitalization must follow the target language.
-Return ONLY one final title line.
-"""
-    candidates = []
-    for temp in [0.10, 0.04, 0.0]:
+    title = title_from_semantic_skeleton(lang, es_title)
+    title = localize_foreign_leftovers(fix_broken_title_fragments(title, lang), lang)
+    title = normalize_title_style(fix_broken_title_fragments(clean_variants(clean_title_candidate(title), lang, "TITLE"), lang), lang)
+    # If skeleton title is unexpectedly weak, use strict translation as backup, but still pass through hard guards.
+    if not foreign_title_is_usable(title, lang, es_title):
         try:
-            raw = llm(prompt, system="Native Amazon title localizer with strict ES-title truth. One line only.", temperature=temp)
-            title = localize_foreign_leftovers(normalize_title_style(clean_variants(clean_title_candidate(raw.splitlines()[0]), lang, "TITLE"), lang), lang)
+            backup = strict_translate_es_title_no_facts(lang, es_title, [], [])
+            backup = normalize_title_style(fix_broken_title_fragments(localize_foreign_leftovers(clean_variants(backup, lang, "TITLE"), lang), lang), lang)
+            if foreign_title_is_usable(backup, lang, es_title):
+                title = backup
         except Exception:
-            title = ""
-        if title and not title.lower().startswith(brand.lower()):
-            title = f"{brand} {re.sub(r'(?i)^alpinaluz\s*', '', title).strip()}"
-            title = normalize_title_style(title, lang)
-        if title and title not in candidates:
-            candidates.append(title)
-        if title and foreign_title_is_usable(title, lang, es_title) and not has_extra_local_concept(title, lang, es_title, must) and not contains_banned_keyword(title, ban + ban_local):
-            cache[cache_key] = title
-            return title
-    fallback = strict_translate_es_title_no_facts(lang, es_title, must, ban)
-    if (not foreign_title_is_usable(fallback, lang, es_title)) or has_extra_local_concept(fallback, lang, es_title, must):
-        # Last deterministic fallback; still brand-first, but may be less customized.
-        fallback = normalize_title_style(re.sub(r"\s+", " ", f"{brand} {re.sub(r'(?i)^alpinaluz\s*', '', fallback).strip()}"), lang)
-        if len(fallback) > max_len:
-            fallback = fallback[:max_len].rsplit(" ", 1)[0]
-    cache[cache_key] = fallback
-    return fallback
+            pass
+    if len(title) > max_len:
+        # Do not hard-cut through useful phrases. Drop the lowest-priority tail after the last comma.
+        parts = [x.strip() for x in re.split(r",\s*", title) if x.strip()]
+        while len(", ".join(parts)) > max_len and len(parts) > 2:
+            parts.pop()
+        title = ", ".join(parts)
+        if len(title) > max_len:
+            title = title[:max_len].rsplit(" ", 1)[0].strip(" ,;-–—")
+    title = normalize_title_style(fix_broken_title_fragments(title, lang), lang)
+    cache[cache_key] = title
+    return title
 
 
 def render_keyword_chips(title: str, words: List[str], css_class: str):
@@ -3305,8 +3766,8 @@ Keywords/frases negativas prohibidas. No deben aparecer ni sus equivalentes obvi
 Títulos deterministas seguros que puedes usar como referencia de estructura, pero mejorándolos con lenguaje natural:
 {json.dumps(deterministic, ensure_ascii=False)}
 
-Hechos confirmados del producto:
-{facts_for_prompt('ES')}
+Hechos compactos para título:
+{title_context_for_prompt('ES')}
 
 Reglas obligatorias:
 - Cada título empieza por Alpinaluz.
@@ -3390,8 +3851,8 @@ All previous candidates and detected issues:
 Extra user direction:
 {round_feedback or '(none)'}
 
-Confirmed product facts:
-{facts_for_prompt('ES')}
+Compact title facts:
+{title_context_for_prompt('ES')}
 
 Hard rules:
 - Generate 4 complete, natural Amazon.es titles, not keyword fragments.
@@ -3471,6 +3932,82 @@ Devuelve solo el título final, sin explicación.
     return spanish_title_case(remove_water_phrases(title))
 
 
+
+def chat_title_workspace_round(base_title: str, user_message: str, n: int = 3) -> List[str]:
+    """V16.6: Chat-like ES title workshop.
+    Uses a compact title-only context, like the successful ChatGPT workflow: one current title + one instruction + locked facts.
+    It does NOT read full long description/A+ repeatedly, so it is cheaper and less likely to drag low-value specs into the title.
+    """
+    base_title = normalize_title_style(str(base_title or "").strip() or build_safe_title("ES"), "ES")
+    user_message = str(user_message or "").strip()
+    min_len = int(st.session_state.get("min_title", 150))
+    max_len = int(st.session_state.get("max_title", 200))
+    must = st.session_state.get("title_must_keywords", []) or []
+    banned = st.session_state.get("title_banned_keywords", []) or []
+    history = st.session_state.get("title_chat_history", [])[-6:]
+    prompt = f"""
+Actúa como un editor senior de títulos Amazon.es para iluminación. Este es un TALLER DE TÍTULO, no generación de listing completo.
+
+Objetivo: mejorar el título actual con el menor cambio necesario para hacerlo más vendible, natural y SEO, como si el usuario te diera instrucciones en un chat.
+
+Título actual seleccionado:
+{base_title}
+
+Instrucción del usuario para esta ronda:
+{user_message or '(sin instrucción específica; mejora de forma natural sin cambiar hechos)'}
+
+Contexto compacto permitido para título:
+{title_context_for_prompt('ES')}
+
+Keywords que deben respetarse si encajan naturalmente:
+{json.dumps(must, ensure_ascii=False)}
+
+Keywords/frases prohibidas:
+{json.dumps(banned, ensure_ascii=False)}
+
+Historial breve de iteración:
+{json.dumps(history, ensure_ascii=False, indent=2)}
+
+Reglas duras:
+- Devuelve JSON válido con exactamente {n} títulos candidatos.
+- Todos empiezan por Alpinaluz.
+- Longitud objetivo {min_len}-{max_len} caracteres; no rellenes con frases vacías.
+- No SKU/modelo. No serie salvo que esté activado. Serie: {get_series_name() or '(vacía)'}; política: {'INCLUIR' if title_should_include_series() else 'NO incluir'}.
+- No inventar hechos ni cambiar E27/G9/GU10/LED integrado, colores, materiales o dimensiones confirmadas.
+- No usar: ideal para, perfecto para, bonito, precioso, bombilla no incluida, sin bombilla, no incluye bombilla.
+- Evitar “compatible” en título; usa “Casquillo E27/G9/GU10” o “LED integrado” cuando aplique.
+- No meter detalles de baja intención comercial: cable 2,4 m, incluye accesorios, instalación sencilla, base, distancia a pared, medidas secundarias. Esos van en bullets.
+- IMPORTANTE: no bloquear palabras sueltas. "interruptor" puede ser valioso si es táctil, integrado, sensor, regulable o atributo visible; solo evita frases poco comerciales cuando no sean el argumento principal.
+- Mantén estructura natural de Amazon España: marca + producto + material/forma/color + tamaño principal si ayuda + estilo + casquillo/LED + espacios principales.
+- Si el título base ya es bueno, no lo destruyas; haz una versión refinada y dos alternativas cercanas.
+
+Devuelve solo JSON:
+{{"candidates": ["...", "...", "..."]}}
+"""
+    raw = llm(prompt, system="Especialista senior en títulos Amazon.es. Trabaja como chat de refinamiento de título. Output JSON only.", temperature=0.22, reasoning_effort_override="medium")
+    data = safe_json(raw, {"candidates": []})
+    candidates = data.get("candidates", []) if isinstance(data, dict) else []
+    out = []
+    for c in candidates[:6]:
+        c = normalize_title_style(remove_water_phrases(str(c)), "ES")
+        c = ensure_title(c, "ES", title_context_for_prompt("ES"))
+        c = normalize_title_style(c, "ES")
+        if c and c not in out and title_is_valid(c, "ES"):
+            out.append(c)
+    if not out:
+        fb = user_message or "Mejorar el título de forma natural sin añadir detalles técnicos de bajo valor."
+        out.append(refine_es_title_with_feedback(base_title, fb))
+    while len(out) < n:
+        alt = build_safe_title("ES")
+        if alt not in out:
+            out.append(alt)
+        else:
+            break
+    # Store chat turn for future context, but keep short to avoid token growth.
+    st.session_state.setdefault("title_chat_history", []).append({"from": base_title, "instruction": user_message, "result": out[:n]})
+    st.session_state["title_chat_history"] = st.session_state["title_chat_history"][-8:]
+    return out[:n]
+
 def pro_audit_final_es_title(base_title: str) -> str:
     """V15.8: GPT-5.5 final title polish with rollback.
     Uses the normal model, not Pro, to avoid high cost and long waits.
@@ -3502,6 +4039,7 @@ Reglas duras:
 - No SKU/modelo. No serie salvo que esté activado. Serie actual: {get_series_name() or '(vacía)'}; política: {'INCLUIR' if title_should_include_series() else 'NO incluir'}.
 - No añadir hechos ausentes. No cambiar E27/G9/GU10/LED integrado. No cambiar colores, materiales ni dimensiones confirmadas.
 - Título para venta, no ficha técnica: incluye como máximo una dimensión principal visible si ayuda (por ejemplo Ø18 cm u Ø45 cm). No meter distancia a pared, base, cable, altura total, 65 cm u otras medidas secundarias; esas van en bullets.
+- Si el interruptor es un valor comercial real (táctil, integrado, sensor, USB, regulable), puede aparecer; no lo elimines solo por contener la palabra interruptor.
 - Prohibido en título: ideal para, perfecto para, compatible, bombilla no incluida, sin bombilla, no incluye bombilla.
 - Para productos con casquillo, puedes escribir Casquillo E27/G9/GU10 o E27 G45 si aporta valor, pero no “compatible con”.
 - Mantén estructura natural de Amazon: marca + producto + material/forma + tamaño principal + acabado/color relevante + estilo + casquillo + espacios principales.
@@ -3560,7 +4098,7 @@ Hard rules:
 - If language is not Spanish, do not leave Spanish phrases such as Aplique de Pared, Foco Orientable, Dormitorio, Salón, Bandeja, Puertos. Translate product type, room, material and colour fully into the target language.
 - For integrated LED products, say LED integrated / built-in LED naturally in the target language and do NOT mention replaceable bulbs unless confirmed.
 - 5 bullets, each ideally between {min_bullet} and {max_bullet} characters. If original bullets are strong, preserve every concrete point and expand it; do not summarize.
-- Every bullet MUST use a conversion-friendly Amazon structure: "Feature Label: specific benefit/detail". Example ES: "Diseño Elegante: Pantalla esférica de cristal opalino con un diámetro de 15 cm." Use native labels in the target language, 2-5 words before the colon, and avoid generic labels.
+- Every bullet should follow the most natural Amazon high-conversion format for the target marketplace: a clear benefit/feature opening followed by concrete detail. A colon is allowed and recommended, but the label must sound human and can be 3-8 words, not a forced two-word label. Avoid awkward labels such as “Montaje Ordenado” or literal machine labels.
 - Description should be at least {min_desc} characters, naturally structured and professional, without invented facts.
 - Search terms must stay within {max_st} characters total.
 - Do not use filler title phrases such as ideal para/perfecto para.
@@ -3640,6 +4178,36 @@ def enforce_bullet_label_format(bullets: List[str], lang: str) -> List[str]:
     return out[:5]
 
 
+
+BAD_BULLET_LABEL_REPLACEMENTS = {
+    "ES": {
+        "Montaje Ordenado": "Instalación de Pared Limpia",
+        "Montaje Limpio": "Instalación de Pared Limpia",
+        "Orden y Montaje": "Instalación de Pared Limpia",
+        "Instalación Ordenada": "Instalación de Pared Limpia",
+        "Vidrio Trabajado": "Globo de Vidrio Multicolor",
+        "Cristal Trabajado": "Globo de Cristal Decorativo",
+        "Base Dorada": "Base Metálica Dorada",
+        "Luz Envolvente": "Luz Ambiental Difusa",
+        "Compatibilidad": "Casquillo y Bombilla Recomendada",
+    },
+    "EN": {"Tidy Mounting": "Clean Wall Installation", "Orderly Mounting": "Clean Wall Installation", "Crafted Glass": "Multicolour Glass Globe", "Gold-Tone Base": "Gold-Tone Metal Base"},
+}
+
+def normalize_bullet_label_text(bullet: str, lang: str) -> str:
+    txt = str(bullet or "").strip()
+    if ":" not in txt:
+        return txt
+    label, body = txt.split(":", 1)
+    label_clean = label.strip()
+    repl = BAD_BULLET_LABEL_REPLACEMENTS.get(lang, {}).get(label_clean)
+    if repl:
+        return f"{repl}: {body.strip()}"
+    # Generic Spanish cleanup: labels should be a clear benefit, not a vague operational noun.
+    if lang == "ES" and label_clean.lower() in {"montaje ordenado", "ordenado", "montaje"}:
+        return f"Instalación de Pared Limpia: {body.strip()}"
+    return txt
+
 def sanitize_core(lang: str, core: Dict[str, Any], locked_title: str = "") -> Dict[str, Any]:
     title = locked_title or str(core.get("title", "")).strip().replace("\n", " ")
     title = ensure_title(title, lang, facts_for_prompt(lang))
@@ -3649,6 +4217,7 @@ def sanitize_core(lang: str, core: Dict[str, Any], locked_title: str = "") -> Di
         bullets.append("")
     bullets = [clean_variants(b, lang, "BULLETS") for b in bullets]
     bullets = enforce_bullet_label_format(bullets, lang)
+    bullets = [normalize_bullet_label_text(b, lang) for b in bullets]
 
     description = remove_safety_bad_phrases(str(core.get("description", "")).strip())
     description = clean_variants(description, lang, "DESCRIPTION")
@@ -3768,6 +4337,9 @@ def explain_from_core_or_generate(lang: str, core: Dict[str, Any]) -> Dict[str, 
         "description_cn": str(core.get("description_cn", "")).strip(),
         "search_terms_cn": str(core.get("search_terms_cn", "")).strip(),
     }
+    # Always use deterministic title Chinese explanation to stay synchronized with the final localized title.
+    if lang != "ES":
+        ex["title_cn"] = title_cn_from_skeleton(lang, core.get("title", ""))
     while len(ex["bullets_cn"]) < 5:
         ex["bullets_cn"].append("")
     ex["bullets_cn"] = [str(x).strip() for x in ex["bullets_cn"][:5]]
@@ -3785,10 +4357,7 @@ def build_batch_multilang_prompt(langs: List[str], es_master: str, es_title: str
     min_desc = int(st.session_state.get("min_description", 700))
     max_st = int(st.session_state.get("max_search_terms", 250))
     lang_info = {l: LANGS[l] for l in langs}
-    must = [normalize_title_units(str(x).strip()) for x in st.session_state.get("title_must_keywords", []) if str(x).strip()]
-    ban = [normalize_title_units(str(x).strip()) for x in st.session_state.get("title_banned_keywords", []) if str(x).strip()]
-    localized_must = {l: translate_keyword_concepts(must, l) for l in langs}
-    localized_ban = {l: translate_keyword_concepts(ban, l) for l in langs}
+    local_titles = {l: foreign_title_from_keyword_strategy(l, es_title) for l in langs}
     return f"""
 You are generating localized Amazon listing packages for Alpinaluz lighting products.
 
@@ -3801,25 +4370,22 @@ FINAL locked Amazon.es title. Treat this as the product-title truth:
 FULL ES MASTER. Preserve facts and selling strategy, but write native local copy:
 {es_master}
 
-User selected title must-keywords in Spanish and localized equivalents:
-{json.dumps({"must_es": must, "must_local": localized_must}, ensure_ascii=False, indent=2)}
+Exact localized titles to use. Do NOT rewrite these titles; copy each title exactly into the corresponding TITLE field:
+{json.dumps(local_titles, ensure_ascii=False, indent=2)}
 
-User selected banned title concepts and localized equivalents:
-{json.dumps({"ban_es": ban, "ban_local": localized_ban}, ensure_ascii=False, indent=2)}
-
-Confirmed product facts, for fact checking only. If a fact conflicts with the final ES title, follow the ES title:
+Confirmed product facts, for fact checking only. If a fact conflicts with the final ES title or exact localized title, follow the final ES title/localized title:
 {facts_for_prompt('ES')}
 
 Hard rules for every target language:
 - Output valid JSON only, object keyed by language code: {json.dumps(langs, ensure_ascii=False)}.
 - Each title MUST start with Alpinaluz.
 - Title must be native for the target marketplace and should not look like word-for-word Spanish.
-- Title must follow the FINAL ES title and selected must/ban concepts. Do not add extra facts that are absent from the ES title unless the user selected them as must concepts.
+- TITLE field must exactly match the provided localized title for that language. Do not rewrite, shorten or expand it.
 - No Chinese inside target-language title/bullets/description/search terms. Chinese only in *_cn fields and A+ image tips.
 - No Spanish leftovers in non-Spanish languages except universal codes such as E27, G45, LED, IP20, USB-C.
 - Use local capitalization: EN title case; DE natural German noun capitalization; FR/IT/PT/NL/PL/SE native marketplace style, not Spanish Title Case.
 - Title max {max_title} characters. Prefer natural, beautiful, sales-oriented titles over technical-fiche titles. Do not include low-value phrases: ideal/perfect/compatible/bulb not included in the title.
-- Bullets: exactly 5. Each bullet should use "Feature Label: specific detail/benefit" in the target language, ideally {min_bullet}-{max_bullet} characters. Preserve concrete facts from ES.
+- Bullets: exactly 5. Use native Amazon high-conversion bullet style. The prefix before the colon should be a natural selling point phrase, usually 3-9 words, not a forced two-word label. Do not invent vague labels such as “Orderly Mounting / Montaje Ordenado”. Preserve concrete facts from ES.
 - Description: at least {min_desc} characters when natural. Professional, no invented facts.
 - Search terms: native search terms only, max {max_st} characters.
 - A+ modules: exactly 5 modules. Module 1 and 5 are scene/use image copy. Modules 2/3/4 are three most important feature details. Use the format with Chinese labels:
@@ -3875,9 +4441,12 @@ def generate_multilang_batch(langs: List[str], es_master: str, es_title: str) ->
                 "search_terms_cn": item.get("search_terms_cn") or item.get("Search Terms中文解释") or "",
                 "aplus": item.get("APLUS") or item.get("aplus") or "",
             }
-            # If batch title is weak, use the deterministic/keyword title function. This may call LLM only for broken titles.
+            # V16.6: title is generated from the ES semantic skeleton, not free-generated by the batch model.
+            # This keeps brand first, local capitalization stable, and prevents broken fragments.
+            if es_title:
+                core["title"] = foreign_title_from_keyword_strategy(lang, es_title)
             core = sanitize_core(lang, core)
-            if es_title and (not foreign_title_is_usable(core.get("title", ""), lang, es_title) or title_has_extra_specs_vs_es(core.get("title", ""), es_title)):
+            if es_title:
                 core["title"] = foreign_title_from_keyword_strategy(lang, es_title)
             explain = explain_from_core_or_generate(lang, core)
             result[lang] = compose_listing(lang, core, explain)
@@ -3885,8 +4454,37 @@ def generate_multilang_batch(langs: List[str], es_master: str, es_title: str) ->
     return result
 
 
+def sanitize_bullets_natural(lang: str, bullets: List[str]) -> List[str]:
+    """Post-process obvious machine-style bullet prefixes without changing facts.
+    Keeps Amazon bullet style natural and prevents labels like “Montaje Ordenado” or double prefixes.
+    """
+    out = []
+    replacements = {
+        "ES": [(r"^Montaje Ordenado\s*:", "Instalación de Pared Limpia:"), (r"^Vidrio Trabajado\s*:", "Globo de Vidrio Decorativo:")],
+        "EN": [(r"^Orderly Mounting\s*:", "Clean Wall Installation:"), (r"^Crafted Glass\s*:", "Decorative Glass Globe:")],
+        "FR": [(r"^Montage Ordonné\s*:", "Installation murale soignée:"), (r"^Verre travaillé\s*:", "Globe en verre décoratif:")],
+        "DE": [(r"^Natürliche Materialien:\s*Verarbeitetes Glas, jedes Stück einzigartig\s*:", "Verarbeitetes Glas mit individuellem Charakter:"), (r"^Verarbeitetes Glas, jedes Stück einzigartig\s*:", "Verarbeitetes Glas mit individuellem Charakter:")],
+        "IT": [(r"^Montaggio ordinato\s*:", "Installazione a parete pulita:"), (r"^Vetro lavorato\s*:", "Globo in vetro decorativo:")],
+        "PT": [(r"^Montagem ordenada\s*:", "Instalação de parede limpa:"), (r"^Vidro trabalhado\s*:", "Globo de vidro decorativo:")],
+        "NL": [(r"^Ordelijk gemonteerd\s*:", "Nette wandmontage:"), (r"^Bewerkt glas\s*:", "Decoratieve glazen bol:")],
+        "PL": [(r"^Uporządkowany montaż\s*:", "Estetyczny montaż ścienny:"), (r"^Obrabiane szkło\s*:", "Dekoracyjna szklana kula:")],
+        "SE": [(r"^Ordnad montering\s*:", "Ren väggmontering:"), (r"^Bearbetat glas\s*:", "Dekorativt glasklot:")],
+    }.get(lang, [])
+    for b in (bullets or [])[:5]:
+        b = str(b or "").strip()
+        for pat, rep in replacements:
+            b = re.sub(pat, rep, b, flags=re.I)
+        # Avoid repeated prefix pattern like "X: Y:" at the start.
+        b = re.sub(r"^([^:.]{3,45}:\s*)([^:.]{3,55}:\s*)", r"\2", b)
+        out.append(b)
+    while len(out) < 5:
+        out.append("")
+    return out[:5]
+
+
 def compose_listing(lang: str, core: Dict[str, Any], explain: Dict[str, Any]) -> str:
     out = [f"[{lang}]", "", "[TITLE]", core["title"], "", "[标题中文解释]", str(explain.get("title_cn", "")).strip(), ""]
+    core["bullets"] = sanitize_bullets_natural(lang, core.get("bullets", []))
     out += ["[BULLETS]"]
     for i, b in enumerate(core["bullets"], start=1):
         out.append(f"{i}. {b}")
@@ -3903,25 +4501,27 @@ def export_zip() -> bytes:
     sku = st.session_state.get("sku", "SKU") or "SKU"
     name = f"{sku}_{date.today().isoformat()}_AMAZON-LISTING.zip"
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # V16.5 default: only export files that new staff actually upload/use.
         if st.session_state.get("es_text"):
             zf.writestr("listing/ES_Listing.txt", st.session_state["es_text"])
         for lang, text in st.session_state.get("localized_texts", {}).items():
             zf.writestr(f"listing/{lang}_Listing.txt", text)
-        zf.writestr("tech_specs/field_cards.txt", "\n".join(field_card_lines()))
-        tech_lines = [
-            f"SKU: {st.session_state.get('sku','')}",
-            f"EAN: {st.session_state.get('ean','')}",
-            f"品牌: {st.session_state.get('brand','Alpinaluz')}",
-            "",
-            "【产品事实卡】",
-            *field_card_lines(),
-        ]
-        zf.writestr("tech_specs/manual_required_fields.txt", "\n".join(tech_lines))
-        if st.session_state.get("title_candidates"):
-            details_text = format_title_candidate_details(st.session_state.get("title_candidate_details") or generate_title_candidate_details(st.session_state.get("title_candidates", [])))
-            zf.writestr("quality/title_candidates_es.txt", details_text)
-        if st.session_state.get("fact_suggestions"):
-            zf.writestr("quality/ai_fact_suggestions.json", json.dumps(st.session_state.get("fact_suggestions"), ensure_ascii=False, indent=2))
+        if st.session_state.get("export_quality_files"):
+            zf.writestr("tech_specs/field_cards.txt", "\n".join(field_card_lines()))
+            tech_lines = [
+                f"SKU: {st.session_state.get('sku','')}",
+                f"EAN: {st.session_state.get('ean','')}",
+                f"品牌: {st.session_state.get('brand','Alpinaluz')}",
+                "",
+                "【产品事实卡】",
+                *field_card_lines(),
+            ]
+            zf.writestr("tech_specs/manual_required_fields.txt", "\n".join(tech_lines))
+            if st.session_state.get("title_candidates"):
+                details_text = format_title_candidate_details(st.session_state.get("title_candidate_details") or generate_title_candidate_details(st.session_state.get("title_candidates", [])))
+                zf.writestr("quality/title_candidates_es.txt", details_text)
+            if st.session_state.get("fact_suggestions"):
+                zf.writestr("quality/ai_fact_suggestions.json", json.dumps(st.session_state.get("fact_suggestions"), ensure_ascii=False, indent=2))
     buf.seek(0)
     st.session_state["zip_name"] = name
     return buf.read()
@@ -3935,17 +4535,22 @@ with st.sidebar:
     st.header("API 与模式")
     st.text_input("OpenAI API Key", type="password", key="openai_api_key")
     st.selectbox("主力模型", ["gpt-5.4", "gpt-5.5", "gpt-5.4-mini", "gpt-4.1"], key="model", help="默认 GPT-5.4：日常生成更快、更省。重要链接可手动切 GPT-5.5。")
-    st.selectbox("最终标题精修模型", ["gpt-5.5", "gpt-5.4"], key="final_title_model", help="只在标题接近定稿时点击一次。默认 GPT-5.5，不使用 Pro。")
     st.selectbox("推理强度", ["medium", "high", "xhigh"], key="reasoning_effort", help="默认 medium：质量/速度平衡。重要产品可用 high；xhigh 会明显更慢。")
     st.selectbox("图片识别模式", ["快速：只用文字和图片文件名", "标准：分析前3张图（推荐）", "完整：分析前6张图（较慢）"], key="image_analysis_mode", help="图片越多越准但越慢。日常建议前3张：主图、尺寸图、关键细节图。")
     st.checkbox("AI生成标题中文解释/优缺点（更慢）", key="ai_title_explanations", value=st.session_state.get("ai_title_explanations", False), help="关闭时使用规则解释，能少一次API调用，标题候选会快很多。")
     st.radio("使用模式", ["新手模式", "专业模式"], key="mode", help="新手模式：先识别事实卡，再生成标题候选和ES母版。专业模式：保留更多可调项。")
     st.checkbox("快速多语言生成", key="fast_multilang", value=True, help="默认开启：V16会减少多语言重试，并尽量用同一次输出生成中文解释。")
-    st.selectbox("多语言标题方式", ["本地SEO润色（推荐）", "严格翻译ES标题（最快）"], key="foreign_title_mode", help="本地SEO润色：标题更自然，更像当地Amazon；严格翻译：速度更快、更贴近ES标题。")
+    if st.session_state.get("foreign_title_mode") not in ["语义骨架本地化（推荐，快且稳）", "严格翻译ES标题（备用）"]:
+        st.session_state["foreign_title_mode"] = "语义骨架本地化（推荐，快且稳）"
+    st.selectbox("多语言标题方式", ["语义骨架本地化（推荐，快且稳）", "严格翻译ES标题（备用）"], key="foreign_title_mode", help="推荐：先解析最终ES标题的语义骨架，再按各国Amazon标题习惯本地化，减少翻车和token浪费。")
     st.selectbox("多语言生成方式", ["批量合并生成（推荐，快）", "逐国稳定生成（慢）"], key="multilang_generation_mode", help="批量合并：每次请求同时生成多个国家，减少重复输入和等待；逐国稳定：旧流程，慢但便于定位单个国家问题。")
-    st.number_input("批量每组国家数", min_value=2, max_value=8, key="multilang_batch_size", help="推荐4。数字越大越快，但一次输出越长，偶发格式错误时影响更多国家。")
+    st.number_input("批量每组国家数", min_value=2, max_value=8, key="multilang_batch_size", help="默认8：一次生成全部国家。若某次格式不稳定，再改为4排查。")
     st.checkbox("只生成缺失国家", key="multilang_only_missing", help="已生成过的国家不重跑，方便只补新国家或出错国家。")
+    with st.expander("高级导出设置", expanded=False):
+        st.checkbox("导出 quality / tech_specs 调试文件", key="export_quality_files", help="默认关闭。新手只需要 listing 文件夹；打开后才会额外导出质量检查和字段卡。")
     st.checkbox("生成完成声音提示", key="sound_notify", value=st.session_state.get("sound_notify", True), help="长时间等待多语言生成时，完成后播放一声提示。部分浏览器可能需要允许声音。")
+    st.divider()
+    render_usage_dashboard()
     st.divider()
     st.markdown("### 长度控制")
     st.number_input("标题最小字符", min_value=80, max_value=220, key="min_title")
@@ -3963,8 +4568,8 @@ with st.sidebar:
         st.session_state["uploaded_images"] = []
         st.success("已清空图片")
 
-st.title("Alpinaluz Listing Generator V16.1")
-st.caption("GPT-5.4日常主力 · 修复重复图片名报错 · 批量多语言提速 · 原文保留增强 · 可扩展Mirakl平台")
+st.title("Alpinaluz Listing Generator V16.6")
+st.caption("GPT-5.4日常主力 · 标题聊天主流程 · 多语言标题骨架修复 · 只导出Listing · 可扩展Mirakl平台")
 
 if st.session_state.get("mode") == "新手模式":
     st.info("新手流程：①上传资料 → ②AI识别产品事实卡 → ③确认事实 → ④生成3个ES标题候选 → ⑤选择标题生成ES母版 → ⑥锁定后生成各国版本。")
@@ -4087,6 +4692,9 @@ with col1:
                 st.session_state["title_candidate_details"] = generate_title_candidate_details(st.session_state["title_candidates"])
                 st.session_state["title_round_history"] = [st.session_state["title_candidates"].copy()]
                 st.session_state["selected_title_idx"] = 0
+                if st.session_state.get("title_candidates"):
+                    st.session_state["last_title_zh"] = cheap_title_zh(st.session_state["title_candidates"][0])
+                    st.session_state["last_title_zh_source"] = st.session_state["title_candidates"][0]
                 notify_done("ES标题候选已生成")
         except Exception as e:
             st.error(str(e))
@@ -4147,35 +4755,75 @@ if st.session_state.get("title_candidates"):
     selected = st.session_state["title_candidates"][idx]
     st.session_state["selected_es_title"] = selected
     d = details[idx] if idx < len(details) else {}
-    st.text_area("选定标题", value=selected, height=80)
+    edited_selected = st.text_area("选定标题（可直接手动微调）", value=selected, height=80, help="这里就是最终ES标题工作区。可以直接手动改；锁定ES母版时会使用这里的当前标题。")
+    if edited_selected and edited_selected.strip() != selected:
+        edited_selected = normalize_title_style(clean_title_candidate(edited_selected.strip()), "ES")
+        st.session_state["title_candidates"][idx] = edited_selected
+        st.session_state["selected_es_title"] = edited_selected
+        selected = edited_selected
+        st.session_state["last_title_zh"] = ""
+        st.session_state["last_title_zh_source"] = ""
 
-    st.markdown("#### 最终标题精修（GPT-5.5，可回退）")
-    st.caption("已取消 Pro 默认流程。新手用 GPT-5.5 迭代；标题接近可用时，可点一次 5.5 终稿精修。若改坏，可立即回退。")
-    pc1, pc2, pc3 = st.columns([1.4, 1, 2.2])
-    with pc1:
-        if st.button("用最终模型精修标题（可回退）", type="primary", use_container_width=True):
+    zh_cols = st.columns([1.2, 3])
+    with zh_cols[0]:
+        if st.button("便宜翻译当前标题", use_container_width=True):
             try:
-                with st.spinner("GPT-5.5 正在精修最终标题：检查SEO、成交感、禁水词和事实一致性..."):
-                    old_title = st.session_state["title_candidates"][idx]
-                    new_title = pro_audit_final_es_title(old_title)
-                    st.session_state.setdefault("title_final_history", []).append(old_title)
-                    st.session_state["title_candidates"][idx] = new_title
-                    st.session_state["selected_es_title"] = new_title
+                with st.spinner("正在用轻量模型翻译标题..."):
+                    _title_to_translate = st.session_state.get("selected_es_title", selected)
+                    st.session_state["last_title_zh"] = cheap_title_zh(_title_to_translate)
+                    st.session_state["last_title_zh_source"] = _title_to_translate
+            except Exception as e:
+                st.error(str(e))
+    with zh_cols[1]:
+        if st.session_state.get("last_title_zh_source") == selected and st.session_state.get("last_title_zh"):
+            current_zh = st.session_state.get("last_title_zh")
+        else:
+            current_zh = d.get("cn", "") or "标题已变化，建议点击左侧按钮刷新中文释义。"
+        st.text_area("当前标题中文释义（给新手判断用）", value=current_zh, height=72, disabled=True)
+
+    st.markdown("#### V16.6 标题聊天工作台（主流程）")
+    st.caption("像聊天窗口一样改标题：只读取精简事实 + 当前标题 + 你的修改要求，不再反复读取完整长描述/A+。中文释义会在标题生成后同步刷新，避免新手误判。")
+    chat_cols = st.columns([3, 1, 1])
+    with chat_cols[0]:
+        st.text_area("标题聊天指令", key="title_chat_instruction", height=75, placeholder="例如：更像亚马逊西班牙站标题；突出复古电影风；不要写电线长度；保留触摸开关；标题更有成交感。")
+    with chat_cols[1]:
+        if st.button("聊天式生成3个标题", type="primary", use_container_width=True):
+            try:
+                with st.spinner("正在像聊天窗口一样精修标题...只使用精简标题上下文"):
+                    prev = st.session_state.get("title_candidates", []).copy()
+                    new_titles = chat_title_workspace_round(selected, st.session_state.get("title_chat_instruction", ""), n=3)
+                    st.session_state.setdefault("title_round_history", []).append(prev)
+                    # Put chat candidates first, keep one previous candidate as safety fallback.
+                    merged = []
+                    for t in new_titles + [selected] + prev:
+                        if t and t not in merged:
+                            merged.append(t)
+                    st.session_state["title_candidates"] = merged[:4]
                     st.session_state["title_candidate_details"] = generate_title_candidate_details(st.session_state["title_candidates"])
-                    notify_done("GPT-5.5最终标题已精修")
+                    st.session_state["selected_es_title"] = st.session_state["title_candidates"][0]
+                    st.session_state["last_title_zh"] = cheap_title_zh(st.session_state["selected_es_title"])
+                    st.session_state["last_title_zh_source"] = st.session_state["selected_es_title"]
+                    notify_done("聊天式标题已生成")
                 st.rerun()
             except Exception as e:
                 st.error(str(e))
-    with pc2:
-        if st.session_state.get("title_final_history"):
-            if st.button("回退到精修前标题", use_container_width=True):
-                prev_title = st.session_state["title_final_history"].pop()
-                st.session_state["title_candidates"][idx] = prev_title
-                st.session_state["selected_es_title"] = prev_title
+    with chat_cols[2]:
+        if st.button("回退聊天前标题", use_container_width=True):
+            hist = st.session_state.get("title_round_history", [])
+            if hist:
+                st.session_state["title_candidates"] = hist.pop()
                 st.session_state["title_candidate_details"] = generate_title_candidate_details(st.session_state["title_candidates"])
+                st.session_state["selected_es_title"] = st.session_state["title_candidates"][0] if st.session_state["title_candidates"] else ""
                 st.rerun()
-    with pc3:
-        st.markdown("<div class='kw-help'>终稿精修仍使用 GPT-5.5，不用 Pro，避免单个链接成本过高。标题不会写不含灯泡、ideal/perfecto/compatible，也会避免把65cm、底座尺寸、距离墙面等次要技术参数塞进标题。</div>", unsafe_allow_html=True)
+            else:
+                st.info("暂无可回退版本。")
+    with st.expander("标题聊天规则说明", expanded=False):
+        st.markdown("""
+- 标题聊天只使用精简上下文：原标题、事实卡核心字段、必须词/禁止词和当前标题。
+- 不会把完整五点、长描述、A+重复喂给标题模型，减少token和负优化。
+- 不粗暴禁止单词：例如 `interruptor táctil`、`interruptor integrado` 如果是核心卖点可以保留；只是避免 `cable 2,4 m`、`bombilla no incluida`、`instalación sencilla` 这类低价值说明占标题位置。
+- 标题确认后再生成ES母版；多语言标题会基于最终锁定ES标题的语义骨架本地化。
+""")
 
     with st.expander("这个标题的中文解释 / 优点 / 风险（默认折叠）", expanded=False):
         st.markdown(f"**中文解释：** {d.get('cn','')}")
@@ -4192,148 +4840,154 @@ if st.session_state.get("title_candidates"):
                 else:
                     st.warning(msg)
 
-    st.markdown("### 新手关键词三态优化（推荐）")
-    st.caption("不用懂西语：✅必须包含 = 下一轮标题一定要自然出现；➖可选 = 可出现可不出现；🚫禁止出现 = 下一轮标题绝不能出现。自定义词加入后会自动进入 ✅必须包含，方便连续迭代。")
+    with st.expander("高级：关键词参考与三态表（默认折叠，聊天标题优先）", expanded=False):
+        st.markdown("### 关键词参考 / 必须词 / 禁止词")
+        st.caption("现在主流程建议用标题聊天工作台。这里主要给新手查看关键词中文含义，或在特殊情况下手动设置必须/禁止词。")
+        st.markdown("### 新手关键词三态优化（推荐）")
+        st.caption("不用懂西语：✅必须包含 = 下一轮标题一定要自然出现；➖可选 = 可出现可不出现；🚫禁止出现 = 下一轮标题绝不能出现。自定义词加入后会自动进入 ✅必须包含，方便连续迭代。")
 
-    # Initialize default must keywords only once, using the current product facts and candidate pool.
-    keyword_pool = title_keyword_pool_es(st.session_state.get("title_candidates", []))
-    if "title_must_keywords" not in st.session_state:
-        default_phrases = []
-        for x in keyword_pool:
-            lab = (x.get("phrase", "") + " " + x.get("cn", "")).lower()
-            if any(k in lab for k in ["lámpara colgante", "ratán", "mimbre", "e27", "salón", "comedor"]):
-                default_phrases.append(x.get("phrase", ""))
-        st.session_state["title_must_keywords"] = default_phrases[:8]
-    if "title_banned_keywords" not in st.session_state:
-        st.session_state["title_banned_keywords"] = []
-
-    st.markdown("<div class='title-compact-note'>先在下面表格里把关键词设为 ✅/➖/🚫。也可以直接补充必须词或禁止词：必须词会进入红色勾选区，禁止词会进入黑红删除区，并会持续参与后续迭代和多语言标题。</div>", unsafe_allow_html=True)
-    custom_cols = st.columns([2.2, 0.9, 2.2, 0.9, 0.85, 0.85])
-    with custom_cols[0]:
-        st.text_input("补充必须关键词", key="title_custom_keywords", help="多个用逗号分隔。例如：pantalla de ratán, efecto de sombras, diseño artesanal。")
-    with custom_cols[1]:
-        if st.button("加入必须", use_container_width=True):
-            added = add_custom_keywords_to_state(st.session_state.get("title_custom_keywords", ""), as_must=True)
-            if added:
-                st.success("已加入必须：" + ", ".join(added))
-                st.rerun()
-            else:
-                st.info("请先输入关键词。")
-    with custom_cols[2]:
-        st.text_input("补充禁止关键词", key="title_custom_banned_keywords", help="多个用逗号分隔。例如：bambú, moderno, industrial。")
-    with custom_cols[3]:
-        if st.button("加入禁止", use_container_width=True):
-            added = add_custom_keywords_as_banned(st.session_state.get("title_custom_banned_keywords", ""))
-            if added:
-                st.success("已加入禁止：" + ", ".join(added))
-                st.rerun()
-            else:
-                st.info("请先输入禁止词。")
-    with custom_cols[4]:
-        if st.button("清空必须", use_container_width=True):
-            st.session_state["title_must_keywords"] = []
-            st.rerun()
-    with custom_cols[5]:
-        if st.button("清空禁止", use_container_width=True):
+        # Initialize default must keywords only once, using the current product facts and candidate pool.
+        keyword_pool = title_keyword_pool_es(st.session_state.get("title_candidates", []))
+        if "title_must_keywords" not in st.session_state:
+            default_phrases = []
+            for x in keyword_pool:
+                lab = (x.get("phrase", "") + " " + x.get("cn", "")).lower()
+                if any(k in lab for k in ["lámpara colgante", "ratán", "mimbre", "e27", "salón", "comedor"]):
+                    default_phrases.append(x.get("phrase", ""))
+            st.session_state["title_must_keywords"] = default_phrases[:8]
+        if "title_banned_keywords" not in st.session_state:
             st.session_state["title_banned_keywords"] = []
-            st.rerun()
 
-    # Refresh pool after any custom additions and merge persistent states.
-    keyword_pool = title_keyword_pool_es(st.session_state.get("title_candidates", []))
-    must_set = {x.lower() for x in st.session_state.get("title_must_keywords", [])}
-    ban_set = {x.lower() for x in st.session_state.get("title_banned_keywords", [])}
-    rows = []
-    for x in keyword_pool:
-        phrase = x.get("phrase", "")
-        key = phrase.lower()
-        if key in ban_set:
-            state = "🚫 禁止出现"
-        elif key in must_set:
-            state = "✅ 必须包含"
-        else:
-            state = "➖ 可选"
-        rows.append({"状态": state, "关键词": phrase, "中文解释": x.get("cn", "")})
-
-    edited_rows = st.data_editor(
-        rows,
-        key="keyword_state_editor_v154",
-        hide_index=True,
-        use_container_width=True,
-        height=min(520, 58 + 32 * max(4, len(rows))),
-        column_config={
-            "状态": st.column_config.SelectboxColumn("状态", help="✅必须包含 / ➖可选 / 🚫禁止出现", width="small", options=["✅ 必须包含", "➖ 可选", "🚫 禁止出现"]),
-            "关键词": st.column_config.TextColumn("西语关键词", width="medium", disabled=True),
-            "中文解释": st.column_config.TextColumn("中文解释", width="large", disabled=True),
-        },
-        disabled=["关键词", "中文解释"],
-    )
-
-    # Sync tri-state table into session; this is not a widget key, so it is safe.
-    current_must, current_ban = [], []
-    edited_records = editor_rows_to_records(edited_rows)
-    for r in edited_records:
-        if not isinstance(r, dict):
-            continue
-        phrase = str(r.get("关键词", "")).strip()
-        state = str(r.get("状态", "➖ 可选"))
-        if not phrase:
-            continue
-        if state.startswith("✅"):
-            if keyword_key(phrase) not in {keyword_key(x) for x in current_must}:
-                current_must.append(phrase)
-        elif state.startswith("🚫"):
-            if keyword_key(phrase) not in {keyword_key(x) for x in current_ban}:
-                current_ban.append(phrase)
-    # Auto-merge custom inputs if user clicks generate without pressing add.
-    pending_custom = split_keyword_input(st.session_state.get("title_custom_keywords", ""))
-    pending_ban = split_keyword_input(st.session_state.get("title_custom_banned_keywords", ""))
-    if pending_custom:
-        for w in pending_custom:
-            if keyword_key(w) not in {keyword_key(x) for x in current_must} and keyword_key(w) not in {keyword_key(x) for x in current_ban}:
-                current_must.append(w)
-        add_custom_keywords_to_state(st.session_state.get("title_custom_keywords", ""), as_must=True)
-    if pending_ban:
-        for w in pending_ban:
-            if keyword_key(w) not in {keyword_key(x) for x in current_ban}:
-                current_ban.append(w)
-        add_custom_keywords_as_banned(st.session_state.get("title_custom_banned_keywords", ""))
-        # Negative list wins if the same phrase was selected as must.
-        ban_low = {keyword_key(x) for x in current_ban}
-        current_must = [x for x in current_must if keyword_key(x) not in ban_low]
-    st.session_state["title_must_keywords"] = current_must
-    st.session_state["title_banned_keywords"] = current_ban
-
-    # Render chips AFTER syncing editor state, so the red/ban lists reflect the latest click immediately.
-    render_keyword_chips("✅ 当前必须包含：", current_must, "kw-must")
-    render_keyword_chips("🚫 当前禁止出现：", current_ban, "kw-ban")
-
-    hcol1, hcol2, hcol3 = st.columns([1.3, 1, 2.2])
-    with hcol1:
-        if st.button("按三态关键词生成下一轮标题", type="primary", use_container_width=True):
-            try:
-                with st.spinner("正在按必须/禁止关键词自然重组标题..."):
-                    prev = st.session_state.get("title_candidates", [])
-                    new_round = generate_next_title_round_from_keywords(current_must, "", current_ban)
-                    st.session_state.setdefault("title_round_history", []).append(prev.copy())
-                    st.session_state["title_candidates"] = new_round
-                    st.session_state["title_candidate_details"] = generate_title_candidate_details(new_round)
-                    st.session_state["selected_es_title"] = new_round[0] if new_round else ""
-                    notify_done("下一轮标题已生成")
+        st.markdown("<div class='title-compact-note'>先在下面表格里把关键词设为 ✅/➖/🚫。也可以直接补充必须词或禁止词：必须词会进入红色勾选区，禁止词会进入黑红删除区，并会持续参与后续迭代和多语言标题。</div>", unsafe_allow_html=True)
+        custom_cols = st.columns([2.2, 0.9, 2.2, 0.9, 0.85, 0.85])
+        with custom_cols[0]:
+            st.text_input("补充必须关键词", key="title_custom_keywords", help="多个用逗号分隔。例如：pantalla de ratán, efecto de sombras, diseño artesanal。")
+        with custom_cols[1]:
+            if st.button("加入必须", use_container_width=True):
+                added = add_custom_keywords_to_state(st.session_state.get("title_custom_keywords", ""), as_must=True)
+                if added:
+                    st.success("已加入必须：" + ", ".join(added))
+                    st.rerun()
+                else:
+                    st.info("请先输入关键词。")
+        with custom_cols[2]:
+            st.text_input("补充禁止关键词", key="title_custom_banned_keywords", help="多个用逗号分隔。例如：bambú, moderno, industrial。")
+        with custom_cols[3]:
+            if st.button("加入禁止", use_container_width=True):
+                added = add_custom_keywords_as_banned(st.session_state.get("title_custom_banned_keywords", ""))
+                if added:
+                    st.success("已加入禁止：" + ", ".join(added))
+                    st.rerun()
+                else:
+                    st.info("请先输入禁止词。")
+        with custom_cols[4]:
+            if st.button("清空必须", use_container_width=True):
+                st.session_state["title_must_keywords"] = []
                 st.rerun()
-            except Exception as e:
-                st.error(str(e))
-    with hcol2:
-        if st.button("返回上一轮标题", use_container_width=True):
-            hist = st.session_state.get("title_round_history", [])
-            if hist:
-                st.session_state["title_candidates"] = hist.pop()
-                st.session_state["title_candidate_details"] = generate_title_candidate_details(st.session_state["title_candidates"])
-                st.session_state["selected_es_title"] = st.session_state["title_candidates"][0] if st.session_state["title_candidates"] else ""
+        with custom_cols[5]:
+            if st.button("清空禁止", use_container_width=True):
+                st.session_state["title_banned_keywords"] = []
                 st.rerun()
+
+        # Refresh pool after any custom additions and merge persistent states.
+        keyword_pool = title_keyword_pool_es(st.session_state.get("title_candidates", []))
+        must_set = {x.lower() for x in st.session_state.get("title_must_keywords", [])}
+        ban_set = {x.lower() for x in st.session_state.get("title_banned_keywords", [])}
+        rows = []
+        for x in keyword_pool:
+            phrase = x.get("phrase", "")
+            key = phrase.lower()
+            if key in ban_set:
+                state = "🚫 禁止出现"
+            elif key in must_set:
+                state = "✅ 必须包含"
             else:
-                st.info("暂无上一轮。")
-    with hcol3:
-        st.markdown("<div class='kw-help'>建议：✅选 5–10 个真正重要的词，例如产品类型、材质、尺寸、灯头、风格、主要空间；🚫把错误风格、错误材质、错误场景或不想出现的词设为禁止。系统会按自然语序重排，不会直接堆词。</div>", unsafe_allow_html=True)
+                state = "➖ 可选"
+            rows.append({"状态": state, "关键词": phrase, "中文解释": x.get("cn", "")})
+
+        edited_rows = st.data_editor(
+            rows,
+            key="keyword_state_editor_v154",
+            hide_index=True,
+            use_container_width=True,
+            height=min(520, 58 + 32 * max(4, len(rows))),
+            column_config={
+                "状态": st.column_config.SelectboxColumn("状态", help="✅必须包含 / ➖可选 / 🚫禁止出现", width="small", options=["✅ 必须包含", "➖ 可选", "🚫 禁止出现"]),
+                "关键词": st.column_config.TextColumn("西语关键词", width="medium", disabled=True),
+                "中文解释": st.column_config.TextColumn("中文解释", width="large", disabled=True),
+            },
+            disabled=["关键词", "中文解释"],
+        )
+
+        # Sync tri-state table into session; this is not a widget key, so it is safe.
+        current_must, current_ban = [], []
+        edited_records = editor_rows_to_records(edited_rows)
+        for r in edited_records:
+            if not isinstance(r, dict):
+                continue
+            phrase = str(r.get("关键词", "")).strip()
+            state = str(r.get("状态", "➖ 可选"))
+            if not phrase:
+                continue
+            if state.startswith("✅"):
+                if keyword_key(phrase) not in {keyword_key(x) for x in current_must}:
+                    current_must.append(phrase)
+            elif state.startswith("🚫"):
+                if keyword_key(phrase) not in {keyword_key(x) for x in current_ban}:
+                    current_ban.append(phrase)
+        # Auto-merge custom inputs if user clicks generate without pressing add.
+        pending_custom = split_keyword_input(st.session_state.get("title_custom_keywords", ""))
+        pending_ban = split_keyword_input(st.session_state.get("title_custom_banned_keywords", ""))
+        if pending_custom:
+            for w in pending_custom:
+                if keyword_key(w) not in {keyword_key(x) for x in current_must} and keyword_key(w) not in {keyword_key(x) for x in current_ban}:
+                    current_must.append(w)
+            add_custom_keywords_to_state(st.session_state.get("title_custom_keywords", ""), as_must=True)
+        if pending_ban:
+            for w in pending_ban:
+                if keyword_key(w) not in {keyword_key(x) for x in current_ban}:
+                    current_ban.append(w)
+            add_custom_keywords_as_banned(st.session_state.get("title_custom_banned_keywords", ""))
+            # Negative list wins if the same phrase was selected as must.
+            ban_low = {keyword_key(x) for x in current_ban}
+            current_must = [x for x in current_must if keyword_key(x) not in ban_low]
+        st.session_state["title_must_keywords"] = current_must
+        st.session_state["title_banned_keywords"] = current_ban
+
+        # Render chips AFTER syncing editor state, so the red/ban lists reflect the latest click immediately.
+        render_keyword_chips("✅ 当前必须包含：", current_must, "kw-must")
+        render_keyword_chips("🚫 当前禁止出现：", current_ban, "kw-ban")
+
+        hcol1, hcol2, hcol3 = st.columns([1.3, 1, 2.2])
+        with hcol1:
+            if st.button("按三态关键词生成下一轮标题", type="primary", use_container_width=True):
+                try:
+                    with st.spinner("正在按必须/禁止关键词自然重组标题..."):
+                        prev = st.session_state.get("title_candidates", [])
+                        new_round = generate_next_title_round_from_keywords(current_must, "", current_ban)
+                        st.session_state.setdefault("title_round_history", []).append(prev.copy())
+                        st.session_state["title_candidates"] = new_round
+                        st.session_state["title_candidate_details"] = generate_title_candidate_details(new_round)
+                        st.session_state["selected_es_title"] = new_round[0] if new_round else ""
+                        if st.session_state.get("selected_es_title"):
+                            st.session_state["last_title_zh"] = cheap_title_zh(st.session_state["selected_es_title"])
+                            st.session_state["last_title_zh_source"] = st.session_state["selected_es_title"]
+                        notify_done("下一轮标题已生成")
+                    st.rerun()
+                except Exception as e:
+                    st.error(str(e))
+        with hcol2:
+            if st.button("返回上一轮标题", use_container_width=True):
+                hist = st.session_state.get("title_round_history", [])
+                if hist:
+                    st.session_state["title_candidates"] = hist.pop()
+                    st.session_state["title_candidate_details"] = generate_title_candidate_details(st.session_state["title_candidates"])
+                    st.session_state["selected_es_title"] = st.session_state["title_candidates"][0] if st.session_state["title_candidates"] else ""
+                    st.rerun()
+                else:
+                    st.info("暂无上一轮。")
+        with hcol3:
+            st.markdown("<div class='kw-help'>建议：✅选 5–10 个真正重要的词，例如产品类型、材质、尺寸、灯头、风格、主要空间；🚫把错误风格、错误材质、错误场景或不想出现的词设为禁止。系统会按自然语序重排，不会直接堆词。</div>", unsafe_allow_html=True)
 
     with st.expander("高级：只修改当前选定标题（熟手用）", expanded=False):
         st.text_area("针对这个标题的修改要求（只改当前标题）", key="title_refine_feedback", height=80, help="例如：补上USB-C和28 cm托盘；去掉moderno；强调Retro Cinema；不要写ideal para。")
@@ -4402,7 +5056,7 @@ if st.button("生成各国版本"):
                 existing = st.session_state.get("localized_texts", {}) or {}
                 localized.update(existing)
                 targets = [l for l in targets if l not in existing]
-            with st.spinner("正在根据锁定ES标题 + 三态关键词策略生成各国版本..."):
+            with st.spinner("正在根据锁定ES标题语义骨架生成各国本地化版本..."):
                 if st.session_state.get("multilang_generation_mode", "批量合并生成（推荐，快）").startswith("批量"):
                     localized.update(generate_multilang_batch(targets, es_master, es_title_for_multilang))
                 else:
