@@ -15,7 +15,7 @@ try:
 except Exception:
     OpenAI = None
 
-st.set_page_config(page_title="Alpinaluz Listing Generator V16.6", layout="wide")
+st.set_page_config(page_title="Alpinaluz Listing Generator V16.9", layout="wide")
 
 st.markdown("""
 <style>
@@ -1445,6 +1445,20 @@ def title_case_en_like(title: str) -> str:
 def fix_foreign_title_residuals(title: str, lang: str) -> str:
     """Clean common Spanish/English residuals from localized titles without changing product facts."""
     t = str(title or "")
+    # V16.9 deterministic grammar fixes for common local title artifacts.
+    if lang == "IT":
+        t = re.sub(r"(?i)\bstile\s+moderna\b", "stile moderno", t)
+        t = re.sub(r"(?i)\bsunset\b", "tramonto", t)
+    if lang == "NL":
+        t = re.sub(r"(?i)\bmodern\s+stijl\b", "moderne stijl", t)
+    if lang == "PT":
+        t = re.sub(r"(?i)\bsunset\b", "pôr do sol", t)
+    if lang == "FR":
+        t = re.sub(r"(?i)\beffet\s+sunset\b", "effet coucher de soleil", t)
+    if lang == "PL":
+        t = re.sub(r"(?i)\bsunset(?:em)?\b", "zachodu słońca", t)
+    if lang == "SE":
+        t = re.sub(r"(?i)\bsunset[- ]?", "solnedgångs", t)
     if lang == "ES":
         return t
     triple = {
@@ -1503,7 +1517,22 @@ def extract_es_title_skeleton(es_title: str) -> Dict[str, Any]:
     V16.6 uses this for foreign titles instead of free-generation or tri-state keyword tables.
     """
     t = normalize_title_units(str(es_title or ""))
-    low = t.lower()
+    # V16.9: parse the locked title FIRST, but enrich the semantic skeleton from the locked ES master
+    # and trusted manual/source text. In V16.6, foreign titles often lost high-value concepts when
+    # the final ES title was intentionally shorter, e.g. sunset effect / yellow-orange-red glass / gold base.
+    context_text = "\n".join([
+        t,
+        str(st.session_state.get("es_text", "")),
+        str(st.session_state.get("manual_title", "")),
+        str(st.session_state.get("source_text", "")),
+        str(st.session_state.get("manual_description", "")),
+        str(st.session_state.get("technical_notes", "")),
+        str(get_field("核心卖点1") or ""),
+        str(get_field("核心卖点2") or ""),
+        str(get_field("核心卖点3") or ""),
+    ])
+    low = context_text.lower()
+    title_low = t.lower()
     brand = st.session_state.get("brand", "Alpinaluz") or "Alpinaluz"
 
     # Product type from the locked ES title, with fact-card fallback.
@@ -1530,6 +1559,8 @@ def extract_es_title_skeleton(es_title: str) -> Dict[str, Any]:
     m = re.search(r"Ø\s*\d+(?:[.,]\d+)?\s*cm(?:\s*[x×]\s*\d+(?:[.,]\d+)?\s*cm)?", t, flags=re.I)
     if not m:
         m = re.search(r"\b\d+(?:[.,]\d+)?\s*(?:x|×)\s*\d+(?:[.,]\d+)?\s*cm\b", t, flags=re.I)
+    if not m:
+        m = re.search(r"Ø\s*\d+(?:[.,]\d+)?\s*cm", context_text, flags=re.I)
     if m:
         size = normalize_title_units(m.group(0))
 
@@ -1566,10 +1597,10 @@ def extract_es_title_skeleton(es_title: str) -> Dict[str, Any]:
         finish_key = "white_finish"
 
     socket = ""
-    ms = re.search(r"\b(E27|G9|GU10|E14|G45)\b", t, flags=re.I)
+    ms = re.search(r"\b(E27|G9|GU10|E14|G45)\b", context_text, flags=re.I)
     if ms:
         socket = ms.group(1).upper()
-    elif re.search(r"led\s+integrado|LED integrado", t, flags=re.I):
+    elif re.search(r"led\s+integrado|LED integrado", context_text, flags=re.I):
         socket = "LED integrado"
 
     style_keys = []
@@ -1650,6 +1681,20 @@ FINISH_TERMS = {
     "white_finish": {"EN":"white finish", "FR":"finition blanche", "DE":"weißer Oberfläche", "IT":"finitura bianca", "NL":"witte afwerking", "PL":"białe wykończenie", "PT":"acabamento branco", "SE":"vit finish"},
 }
 
+# V16.9: Shorter title-specific phrases. Full EFFECT_TERMS/FINISH_TERMS are good for bullets,
+# but too long for marketplace titles and caused important concepts to be dropped.
+TITLE_EFFECT_TERMS = {
+    "sunset_effect": {"EN":"sunset-effect glass globe", "FR":"globe effet coucher de soleil", "DE":"Glaskugel mit Sonnenuntergangseffekt", "IT":"globo effetto tramonto", "NL":"glazen bol met zonsondergangeffect", "PL":"kula z efektem zachodu słońca", "PT":"globo efeito pôr do sol", "SE":"glasklot med solnedgångseffekt"},
+    "marble_effect": {"EN":"marble-effect finish", "FR":"effet marbre", "DE":"Marmoroptik", "IT":"effetto marmo", "NL":"marmerlook", "PL":"efekt marmuru", "PT":"efeito mármore", "SE":"marmoreffekt"},
+    "shadow_effect": {"EN":"decorative shadow effect", "FR":"effet d’ombres", "DE":"Schattenspiel", "IT":"effetto ombra", "NL":"schaduweffect", "PL":"efekt cieni", "PT":"efeito de sombras", "SE":"skuggeffekt"},
+}
+TITLE_FINISH_TERMS = {
+    "gold_metal_base": {"EN":"gold metal base", "FR":"base métal doré", "DE":"goldfarbene Metallbasis", "IT":"base metallo dorato", "NL":"gouden metalen basis", "PL":"złota metalowa podstawa", "PT":"base metálica dourada", "SE":"guldfärgad metallbas"},
+    "gold_finish": {"EN":"gold finish", "FR":"finition dorée", "DE":"goldfarbene Oberfläche", "IT":"finitura dorata", "NL":"gouden afwerking", "PL":"złote wykończenie", "PT":"acabamento dourado", "SE":"guldfärgad finish"},
+    "black_finish": {"EN":"black finish", "FR":"finition noire", "DE":"schwarze Oberfläche", "IT":"finitura nera", "NL":"zwarte afwerking", "PL":"czarne wykończenie", "PT":"acabamento preto", "SE":"svart finish"},
+    "white_finish": {"EN":"white finish", "FR":"finition blanche", "DE":"weiße Oberfläche", "IT":"finitura bianca", "NL":"witte afwerking", "PL":"białe wykończenie", "PT":"acabamento branco", "SE":"vit finish"},
+}
+
 STYLE_TERMS = {
     "modern": {"EN":"modern", "FR":"moderne", "DE":"modern", "IT":"moderna", "NL":"modern", "PL":"nowoczesny", "PT":"moderno", "SE":"modern"},
     "nordic": {"EN":"Nordic", "FR":"nordique", "DE":"nordisch", "IT":"nordico", "NL":"Scandinavisch", "PL":"skandynawski", "PT":"nórdico", "SE":"nordisk"},
@@ -1683,8 +1728,8 @@ def title_from_semantic_skeleton(lang: str, es_title: str) -> str:
     brand = sk["brand"]
     product = PRODUCT_TERMS.get(sk["product_key"], PRODUCT_TERMS["light"]).get(lang, PRODUCT_TERMS["light"]["EN"])
     material = MATERIAL_TERMS.get(sk["material_key"], {}).get(lang, "")
-    effect = EFFECT_TERMS.get(sk["effect_key"], {}).get(lang, "")
-    finish = FINISH_TERMS.get(sk["finish_key"], {}).get(lang, "")
+    effect = TITLE_EFFECT_TERMS.get(sk["effect_key"], {}).get(lang, "")
+    finish = TITLE_FINISH_TERMS.get(sk["finish_key"], {}).get(lang, "")
     socket = sk.get("socket", "")
     style = local_join_terms([STYLE_TERMS.get(k, {}).get(lang, "") for k in sk.get("style_keys", [])], lang)
     rooms = local_join_terms([ROOM_TERMS.get(k, {}).get(lang, "") for k in sk.get("room_keys", [])], lang)
@@ -3662,7 +3707,7 @@ def foreign_title_from_keyword_strategy(lang: str, es_title: str) -> str:
         return localized_title_from_facts(lang, es_title)
     max_len = int(st.session_state.get("max_title", 200))
     cache = st.session_state.setdefault("title_translation_cache", {})
-    cache_key = f"skeleton_v165::{lang}::{es_title}::{max_len}"
+    cache_key = f"skeleton_v169::{lang}::{es_title}::{max_len}"
     if cache_key in cache:
         return cache[cache_key]
     title = title_from_semantic_skeleton(lang, es_title)
@@ -4568,7 +4613,7 @@ with st.sidebar:
         st.session_state["uploaded_images"] = []
         st.success("已清空图片")
 
-st.title("Alpinaluz Listing Generator V16.6")
+st.title("Alpinaluz Listing Generator V16.9")
 st.caption("GPT-5.4日常主力 · 标题聊天主流程 · 多语言标题骨架修复 · 只导出Listing · 可扩展Mirakl平台")
 
 if st.session_state.get("mode") == "新手模式":
