@@ -1,14 +1,19 @@
-Alpinaluz Listing Generator V16.9
+Alpinaluz Listing Generator V17.7
 
 重点：
-- 基于 V16.6 稳定版修复，不采用 V16.7 的强制标题美化逻辑。
-- 多语言标题不再只读取最终 ES 标题，而是用 ES 标题 + ES母版 + 原始资料提取语义骨架，避免 FR/EN/DE/IT 等国家标题省略日落效果、金色底座、玻璃颜色等高价值信息。
-- 多语言标题使用更短的标题专用短语，尽量保留核心视觉卖点，同时不把标题写成技术参数表。
-- 修复常见语言残留：IT stile moderna、NL modern stijl、DE -Leuchtmittel、sunset 英文残留等。
-- 保留 V16.6 标题聊天工作台和双击运行。
+- 保留 V17.6 的标题信息预算、A/B/C 三级取舍、多语标题自动预审和压缩。
+- 新增低误报风险引擎：红色必须修，黄色建议看，灰色/低置信提示不打扰新手。
+- 增加多语言产品类型同义词识别，避免 Stehlampe / Vloerlamp / Lampadaire / Lampada da Terra / Lampa Podłogowa 被误判为缺失“落地灯类型”。
+- 修复木头颜色误报：madera natural / natural wood / Naturholz 作为材质/饰面处理，不再误判成必须出现“金色/黄铜色”。
+- 风险提示优先使用当前 ES 定稿标题和当前事实卡，降低上一个产品的 G9/GU10/E27 或颜色信息污染。
+- “确认全部绿色标题”更安全，只拦截真正硬风险，减少无效人工检查。
 
-运行：
-Mac：双击 run.command
-Windows：双击 run_windows.bat
+本地运行：
+Mac: 双击 run.command
+Windows: 双击 run_windows.bat
 
-Streamlit Cloud：上传 app.py、requirements.txt、README.txt 即可。
+Streamlit Cloud 上传：
+app.py
+requirements.txt
+README.txt
+可选：run.command / run_windows.bat
