@@ -16,7 +16,7 @@ try:
 except Exception:  # pragma: no cover
     OpenAI = None
 
-APP_VERSION = "V17.7"
+APP_VERSION = "V17.11"
 
 LANGS = {
     "ES": {"name": "Español", "market": "Amazon.es", "native": "español"},
@@ -44,9 +44,27 @@ TITLE_BAD_PHRASES = [
     "incluye accesorios", "instalación sencilla", "fácil instalación", "compatible con bombillas led",
 ]
 
+# Amazon / EU safety: do not mention halogen or deprecated/banned bulb families.
+# This is a hard marketplace safety rule for every generated field.
+BULB_FORBIDDEN_PATTERNS = [
+    r"\bhalogen\w*\b", r"\bhalógen\w*\b", r"\bhalog[eè]n\w*\b", r"\bal[oó]gen\w*\b", r"\bhalogeen\w*\b", r"\bhalogenow\w*\b",
+    r"\bincandescent\w*\b", r"\bincandescent[eis]?\w*\b", r"\bgl[oö]dlampa\w*\b",
+    r"\bedison\w*\b",
+    r"\btraditional\w*\b", r"\btradicional\w*\b", r"\btraditionnel\w*\b", r"\btradizional\w*\b",
+    r"\bstandard\s+(?:bulb|bulbs|lamp|lamps|leuchtmittel|lampadine|ampoules)\b",
+    r"\bbombillas?\s+(?:tradicionales|est[aá]ndar)\b",
+]
+
+SAFE_BULB_COPY_RULE = (
+    "灯泡兼容安全规则：只写兼容对应灯头的 LED 灯泡 + 最大功率 + 灯泡不包含。"
+    "禁止提及卤素、白炽、Edison、traditional/tradicional、standard bulb 等高风险灯泡类型。"
+)
+
 FACT_KEYS = [
     "product_type", "series_name", "key_structure", "materials", "colors", "dimensions", "socket_or_led",
-    "bulb_included", "power", "cct_or_dimming", "adjustability", "installation", "indoor_outdoor",
+    "bulb_included", "power", "cct_or_dimming", "adjustability", "installation",
+    "power_connection", "plug_cable", "switch_included", "switch_type", "cable_length", "plug_type",
+    "indoor_outdoor",
     "style", "spaces", "core_selling_points", "must_keep_in_titles", "do_not_claim", "notes_for_copy",
 ]
 
@@ -63,6 +81,12 @@ FACT_LABELS = {
     "cct_or_dimming": "色温 / 调光",
     "adjustability": "可调节能力",
     "installation": "安装方式",
+    "power_connection": "供电方式",
+    "plug_cable": "是否带插头线",
+    "switch_included": "是否带开关",
+    "switch_type": "开关类型 / 位置",
+    "cable_length": "电源线长度",
+    "plug_type": "插头类型",
     "indoor_outdoor": "室内 / 室外",
     "style": "风格",
     "spaces": "适用空间",
@@ -108,6 +132,8 @@ section[data-testid="stExpander"] { background:#0f172a!important; border:1px sol
 .status-pill { display:inline-block; padding:3px 8px; border-radius:999px; font-size:12px; font-weight:700; margin-right:6px; }
 .s-ok { background:#065f46; color:#d1fae5; } .s-warn { background:#92400e; color:#fef3c7; } .s-bad { background:#991b1b; color:#fee2e2; }
 .recommended { border-color:#22c55e!important; box-shadow:0 0 0 1px rgba(34,197,94,.35); }
+.concept-ok { color:#bbf7d0!important; font-size:12px; margin-top:4px; }
+.concept-muted { color:#94a3b8!important; font-size:12px; margin-top:4px; }
 .status-table { width:100%; border-collapse:collapse; margin:8px 0 12px 0; }
 .status-table td,.status-table th { border-bottom:1px solid #334155; padding:7px 8px; color:#f8fafc; vertical-align:top; }
 .status-table th { color:#cbd5e1; font-weight:700; }
@@ -131,8 +157,11 @@ def init_state() -> None:
         "title_history": {},
         "listings": {},
         "target_langs": TARGET_LANGS.copy(),
-        "listing_mode": "标准包：标题+五点+描述+Search Terms",
-        "es_cand_version": 0,
+        "es_intent_include": "",
+        "es_intent_exclude": "",
+        "es_intent_demote": "",
+        "es_intent_history": [],
+                "es_cand_version": 0,
         "lang_cand_version": {},
         "newbie_auto_title": True,
     }
@@ -166,10 +195,15 @@ def reset_generated_state_if_product_changed() -> None:
             "fact_card", "es_title_candidates", "selected_es_title", "selected_es_title_zh",
             "confirmed_titles", "confirmed_title_zh", "title_candidates", "title_history", "listings",
             "selected_es_title_zh_source", "lang_cand_version", "es_cand_version",
+            "es_intent_include", "es_intent_exclude", "es_intent_demote", "es_intent_history",
         ]:
             if key in st.session_state:
                 if key in ["confirmed_titles", "confirmed_title_zh", "title_candidates", "title_history", "listings", "fact_card", "lang_cand_version"]:
                     st.session_state[key] = {}
+                elif key == "es_intent_history":
+                    st.session_state[key] = []
+                elif key in ["es_intent_include", "es_intent_exclude", "es_intent_demote"]:
+                    st.session_state[key] = ""
                 elif key == "es_title_candidates":
                     st.session_state[key] = []
                 elif key == "es_cand_version":
@@ -508,6 +542,99 @@ def fact_card_text() -> str:
     return "\n".join(lines)
 
 
+
+# ------------------------- fact card Chinese helper -------------------------
+FACT_USAGE = {
+    "product_type": "标题必用：决定类目词，必须确认。",
+    "series_name": "不进标题：通常是系列/SKU/内部型号，默认不要写入标题。",
+    "key_structure": "标题必用/五点必用：决定产品核心结构和主卖点。",
+    "materials": "标题可用：主材质可进标题，细节材质放五点。",
+    "colors": "标题可用：主色必须准确，木色不强制细分。",
+    "dimensions": "标题可用：核心尺寸可进标题，全部尺寸放五点/描述。",
+    "socket_or_led": "标题必用：灯头或LED集成信息不能错。",
+    "bulb_included": "五点/描述用：必须说明灯泡是否包含，但一般不进标题。",
+    "power": "五点/描述用：功率和最大瓦数一般不进标题。",
+    "cct_or_dimming": "标题可用：若是CCT/调光/遥控等核心功能可进标题。",
+    "adjustability": "标题可用：高度可调/角度可调等核心功能可进标题。",
+    "installation": "五点/描述用：安装方式一般不进标题。",
+    "power_connection": "标题必用/五点必用：壁灯带插头线或直接接线要准确，决定购买场景。",
+    "plug_cable": "标题必用（若确认有）：壁灯带插头线是核心卖点；未确认则不要写有/没有。",
+    "switch_included": "标题可用/五点必用（若确认有）：只在确认有开关时写；未确认不要写。",
+    "switch_type": "标题可用：线控、底座、触摸、脚踏等位置必须准确；未确认不写。",
+    "cable_length": "五点/描述用：只有资料确认时才写具体长度，不要猜。",
+    "plug_type": "五点/描述用：只有确认有 EU 插头/USB 等才写。",
+    "indoor_outdoor": "五点/描述用：IP/室内外信息通常放正文。",
+    "style": "标题可用：风格词可保留1-2个，不要堆太多。",
+    "spaces": "标题可用：保留1-2个核心场景即可。",
+    "core_selling_points": "生成文案用：用于五点、描述和A+。",
+    "must_keep_in_titles": "标题必用：AI认为标题应保留的信息，需人工检查是否过多。",
+    "do_not_claim": "禁止宣称：必须检查，避免写不存在功能。",
+    "notes_for_copy": "生成文案用：后续标题/五点/A+的注意事项。",
+}
+
+FACT_TRANSLATION_MAP = [
+    ("lámpara colgante", "吊灯"), ("lampada a sospensione", "吊灯"), ("suspension", "吊灯"), ("pendelleuchte", "吊灯"), ("pendant light", "吊灯"),
+    ("lámpara de pie", "落地灯"), ("stehlampe", "落地灯"), ("lampadaire", "落地灯"), ("floor lamp", "落地灯"), ("lampada da terra", "落地灯"), ("candeeiro de pé", "落地灯"), ("vloerlamp", "落地灯"), ("golvlampa", "落地灯"),
+    ("aplique de pared", "壁灯"), ("wall light", "壁灯"), ("wandleuchte", "壁灯"), ("applique murale", "壁灯"), ("applique da parete", "壁灯"), ("candeeiro de parede", "壁灯"), ("wandlamp", "壁灯"),
+    ("madera natural", "天然木"), ("natural wood", "天然木"), ("naturholz", "天然木"), ("bois naturel", "天然木"), ("legno naturale", "天然木"), ("madeira natural", "天然木"), ("drewno naturalne", "天然木"), ("naturträ", "天然木"),
+    ("metal negro", "黑色金属"), ("black metal", "黑色金属"), ("metallo nero", "黑色金属"), ("métal noir", "黑色金属"), ("metal preto", "黑色金属"), ("schwarzem metall", "黑色金属"),
+    ("blanco", "白色"), ("white", "白色"), ("bianco", "白色"), ("branco", "白色"), ("weiß", "白色"), ("wit", "白色"), ("vit", "白色"),
+    ("pantalla", "灯罩"), ("shade", "灯罩"), ("schirm", "灯罩"), ("abat-jour", "灯罩"), ("paralume", "灯罩"), ("cúpula", "灯罩"), ("klosz", "灯罩"), ("skärm", "灯罩"),
+    ("jaula", "笼形"), ("cage", "笼形"), ("gabbia", "笼形"), ("käfig", "笼形"), ("gaiola", "笼形"), ("klatk", "笼形"),
+    ("altura regulable", "高度可调"), ("adjustable height", "高度可调"), ("höhenverstell", "高度可调"), ("altezza regolabile", "高度可调"), ("hauteur réglable", "高度可调"), ("altura regulável", "高度可调"), ("verstelbare hoogte", "高度可调"),
+    ("casquillo", "灯头"), ("socket", "灯头"), ("fassung", "灯头"), ("douille", "灯头"), ("attacco", "灯头"), ("casquilho", "灯头"), ("fitting", "灯头"), ("sockel", "灯座"),
+    ("bombilla no incluida", "灯泡不含"), ("bulb not included", "灯泡不含"), ("ampoule non incluse", "灯泡不含"), ("lampadina non inclusa", "灯泡不含"), ("lâmpada não incluída", "灯泡不含"), ("leuchtmittel nicht enthalten", "灯泡不含"),
+
+    ("con cable y enchufe", "带电源线和插头"), ("cable y enchufe", "带电源线和插头"), ("plug in", "插头线供电"), ("plug-in", "插头线供电"), ("with plug", "带插头"), ("enchufe", "插头"), ("stecker", "插头"), ("prise", "插头"), ("spina", "插头"), ("ficha", "插头"),
+    ("interruptor en cable", "线控开关"), ("interruptor integrado", "集成开关"), ("interrupteur", "开关"), ("switch", "开关"), ("schalter", "开关"), ("interruttore", "开关"), ("schakelaar", "开关"), ("strömbrytare", "开关"), ("włącznik", "开关"),
+    ("conexión directa", "直接接线"), ("hardwired", "硬接线"), ("raccordement filaire", "硬接线"), ("festem kabelanschluss", "硬接线"),
+    ("interior", "室内"), ("indoor", "室内"), ("innen", "室内"), ("interno", "室内"), ("intérieur", "室内"),
+    ("exterior cubierto", "有遮蔽户外"), ("extérieur couvert", "有遮蔽户外"), ("covered outdoor", "有遮蔽户外"), ("geschützte außen", "有遮蔽户外"), ("überdacht", "有遮蔽户外"), ("esterni coperti", "有遮蔽户外"), ("exterior coberto", "有遮蔽户外"), ("overdekte buiten", "有遮蔽户外"), ("pod zadaszeniem", "有遮蔽户外"), ("skyddad utomhus", "有遮蔽户外"), ("balcón", "阳台"), ("balcon", "阳台"), ("balkon", "阳台"), ("terrasse", "露台"), ("terraza", "露台"), ("terrazza", "露台"), ("terraço", "露台"), ("terras", "露台"), ("patio", "庭院"), ("uteplats", "庭院"),
+    ("cocina", "厨房"), ("kitchen", "厨房"), ("cuisine", "厨房"), ("cucina", "厨房"), ("cozinha", "厨房"), ("küche", "厨房"), ("keuken", "厨房"),
+    ("comedor", "餐厅"), ("dining", "餐厅"), ("sala da pranzo", "餐厅"), ("sala de jantar", "餐厅"), ("esszimmer", "餐厅"), ("eetkamer", "餐厅"),
+    ("salón", "客厅"), ("living room", "客厅"), ("salon", "客厅"), ("soggiorno", "客厅"), ("woonkamer", "客厅"), ("wohnzimmer", "客厅"),
+    ("dormitorio", "卧室"), ("bedroom", "卧室"), ("chambre", "卧室"), ("camera", "卧室"), ("quarto", "卧室"), ("schlafzimmer", "卧室"), ("slaapkamer", "卧室"),
+    ("nórdico", "北欧风"), ("nordic", "北欧风"), ("scandinav", "斯堪的纳维亚风"), ("skandinav", "斯堪的纳维亚风"), ("industrial", "工业风"), ("minimal", "极简风"),
+]
+
+def fact_value_zh_hint(value: Any) -> str:
+    text = clean_text(", ".join(str(x) for x in value) if isinstance(value, list) else str(value or ""))
+    if not text:
+        return "暂无"
+    # If AI already returned a Chinese part, prefer it.
+    m = re.search(r"中文[:：]\s*([^;；\n]+)", text)
+    if m:
+        return clean_text(m.group(1))
+    found = []
+    low = text.lower()
+    for src, zh in FACT_TRANSLATION_MAP:
+        if src.lower() in low and zh not in found:
+            found.append(zh)
+    # Preserve key technical tokens and sizes.
+    for token in re.findall(r"Ø?\d+(?:[.,]\d+)?\s*(?:cm|mm)|\b(?:E27|E14|G9|GU10|LED|CCT|IP\d{2}|\d+W|\d+xE27|\d+\s*x\s*E27)\b", text, flags=re.I):
+        tok = token.upper().replace("CM", "cm").replace("MM", "mm")
+        if tok not in found:
+            found.append(tok)
+    return "、".join(found[:10]) if found else "请人工确认：AI未能本地翻译此字段"
+
+def fact_summary_zh() -> str:
+    fc = st.session_state.get("fact_card", {}) or {}
+    parts = []
+    for k in ["product_type", "key_structure", "materials", "colors", "dimensions", "socket_or_led", "power_connection", "plug_cable", "switch_included", "switch_type", "adjustability", "bulb_included", "spaces"]:
+        hint = fact_value_zh_hint(fc.get(k, ""))
+        if hint and hint not in {"暂无", "请人工确认：AI未能本地翻译此字段"}:
+            parts.append(hint)
+    # de-duplicate fragments while keeping order
+    seen, out = set(), []
+    for p in parts:
+        for chunk in re.split(r"[、,，;；]", p):
+            chunk = clean_text(chunk)
+            if chunk and chunk not in seen:
+                seen.add(chunk); out.append(chunk)
+    if not out:
+        return "事实卡已生成，但中文速览不足，请重点检查产品类型、灯头、尺寸、材质、颜色和是否含灯泡。"
+    return "；".join(out[:18])
+
 def confirmed_title_block() -> str:
     lines = []
     for lang in ALL_LANGS:
@@ -527,15 +654,28 @@ def generate_fact_prompt() -> str:
 {json.dumps(FACT_KEYS, ensure_ascii=False)}
 
 字段说明：
-- product_type: 产品类型，西班牙语为主，也可附中文；
+- product_type: 产品类型，例如吊灯/壁灯/落地灯/台灯/吸顶灯等；
 - series_name: 系列名/型号名，不一定进标题；
-- key_structure: 产品核心结构，比如“三头吊灯/壁灯玻璃球/可调头”等；
+- key_structure: 产品核心结构，比如三头吊灯、圆柱射灯、玻璃球壁灯等；
 - materials/colors/dimensions/socket_or_led: 核心事实；
-- bulb_included: 是否含灯泡，写清楚；
+- bulb_included: 灯泡是否包含。允许写“灯泡不包含”这种售后关键事实；
+- power_connection: 供电方式。只能在确认时写：直接接线 / 带插头线 / USB / 电池 / 太阳能 / 未确认；
+- plug_cable: 是否带插头线。写“已确认有 / 已确认无 / 未确认”，并说明证据。壁灯带插头线是核心卖点；
+- switch_included: 是否带开关。写“已确认有 / 已确认无 / 未确认”，不要把没看到开关等同于没有；
+- switch_type: 开关类型/位置：线控开关、底座开关、灯体开关、脚踏开关、触摸开关、墙壁开关控制、未确认；
+- cable_length/plug_type: 只有资料明确时才写，不要猜；
 - core_selling_points: 5-8个关键卖点；
-- must_keep_in_titles: 标题必须尽量保留的信息，不要太多，但要保留SEO和成交关键；
-- do_not_claim: 不能声称的功能，比如不是LED集成、不可调光、不是户外等；
-- notes_for_copy: 后续写文案要注意什么。
+- must_keep_in_titles: 标题必须尽量保留的信息，不要太多；
+- do_not_claim: 只写需要防止 AI 误写的约束，例如“不要写内置LED/不要写遥控/不要写户外”。未知信息不要写成否定事实；
+- notes_for_copy: 后续写文案注意事项。
+
+重要规则：
+1. JSON 字段值里只放“事实内容”，不要加入“中文：...”这种注释。中文解释由界面单独生成。
+2. 不确定 = 未确认。未确认的信息后续不写有，也不写没有。
+3. 已确认没有的功能主要用于防止 AI 误写，不默认写进 Listing，除非人工备注要求说明。
+4. 只写已确认的正向事实；不要列负面清单。
+5. 灯泡兼容必须保守：只允许 LED + 灯头型号 + 最大功率 + 灯泡不包含。禁止出现 halogen/halógena/halogène、incandescent/incandescente、Edison、traditional/tradicional、standard bulb 等高风险灯泡词。
+6. 如果旧文案含有高风险灯泡词，只用于理解旧资料，不要输出到事实卡。
 
 资料：
 {source_brief()}
@@ -548,7 +688,8 @@ def title_rules(lang: str) -> str:
 - 品牌 Alpinaluz 必须第一位。
 - 标题要像 {LANGS[lang]['market']} 上可成交的专业标题，不要碎词拼接。
 - 保留高价值事实：产品类型、核心结构、核心材质/颜色、关键尺寸、灯头/LED、风格、核心使用场景。
-- 不要把低价值售后/说明塞进标题：bombilla no incluida / bulbs not included / compatible / easy installation / incluye accesorios / cable细节，除非是非常核心卖点。
+- 不要把低价值售后/说明塞进标题：bombilla no incluida / bulbs not included / easy installation / incluye accesorios 等。
+- 平台安全硬规则：标题绝对禁止出现 halogen/halógena/halogène、incandescent/incandescente、Edison、traditional/tradicional、standard bulb 等灯泡类型词。灯泡兼容只写灯头型号，例如 E27/GU10/G9。
 - 不允许中文，不允许 SKU，不允许无具体数字的裸 cm；但 75 cm、Ø20 cm、43 x 5,1 x 2,7 cm 这类前面有数字的写法是允许的。
 - 单灯/单头产品：标题不要突出 1 foco / 1 luz / 1 spot / 1 light / 1-flammig / 1 luce 等数量词，除非用户明确要求；直接写 wall light / aplique / Wandleuchte + 灯头即可。
 - 多灯/多头产品：2灯以上必须保留数量，例如 3 luces / 3 lights / 3-flammig / 3x E27。
@@ -604,6 +745,8 @@ def lang_title_prompt(lang: str, instruction: str = "") -> str:
 {title_budget_text()}
 {must_inherit_text_for_prompt()}
 
+{intent_prompt_text()}
+
 用户本轮中文修改要求：{instruction or '首次生成，请给出3个高质量本地标题'}
 
 最终 ES 标题：
@@ -636,8 +779,10 @@ def batch_lang_title_prompt(langs: List[str]) -> str:
 - 标题必须尽量保留 ES 标题的核心成交信息，但不能机械照搬导致超长。
 - 标题信息预算：{title_budget_text()}
 - A/B/C取舍：{must_inherit_text_for_prompt()}
+- ES人工意图记录：{intent_prompt_text()}
 - 不要写中文，不要写 SKU，不要无具体数字的裸 cm；但 75 cm、Ø20 cm、43 x 5,1 x 2,7 cm 这类前面有数字的写法是允许的。
 - 不要把“灯泡不含/安装简单/配件包含”等低价值说明塞进标题。
+- 灯泡安全：禁止 halogen/卤素、incandescent/白炽、Edison、traditional/tradicional、standard bulb 等词。
 - 每个标题都给一个短中文快译，方便不会外语的同事判断。
 
 各国规则：
@@ -657,7 +802,7 @@ def batch_lang_title_prompt(langs: List[str]) -> str:
 
 只输出 JSON。"""
 
-def listing_prompt(lang: str, include_aplus: bool) -> str:
+def listing_prompt(lang: str, include_aplus: bool = True) -> str:
     title = st.session_state.get("confirmed_titles", {}).get(lang, "")
     es_listing = st.session_state.get("listings", {}).get("ES", {})
     es_bullets = es_listing.get("bullets", []) if isinstance(es_listing, dict) else []
@@ -667,9 +812,12 @@ def listing_prompt(lang: str, include_aplus: bool) -> str:
 
 关键规则：
 - Title 必须完全使用我提供的“已确认标题”，不得修改、不得缩短、不得重写。
-- 只生成五点、长描述、Search Terms 和中文解释；A+ 按开关生成。
+- 生成完整包：五点、长描述、Search Terms、A+ 和所有中文解释。A+ 必须生成5个模块。
 - 如果已有 ES 五点/描述，请逐条保留同样卖点方向，避免负优化。
 - 不要新增不存在功能。灯头/是否含灯泡/尺寸/功率必须准确。
+- 灯泡表述采用平台安全模板：只写“兼容对应灯头的 LED 灯泡，最大功率 XW，灯泡不包含”。
+- 全文绝对禁止出现 halogen/halógena/halogène/卤素、incandescent/incandescente/白炽、Edison、traditional/tradicional、standard bulb 等高风险灯泡词。即使旧文案有，也必须清理掉。
+- 未确认的信息不要写；不要自动写 no tiene/no incluye/no es 等负面清单，除非灯泡不包含、IP/室内限制或人工明确要求。
 - 五点格式要像 Amazon 最常见的自然格式："自然卖点短标题: 具体说明"，短标题可 3-8 个词，不要硬凑两个词。
 - 标题短语不能碎裂，语法要像本地人写的电商文案。
 
@@ -678,6 +826,9 @@ def listing_prompt(lang: str, include_aplus: bool) -> str:
 
 产品事实卡：
 {fact_card_text()}
+
+ES人工意图记录：
+{intent_prompt_text()}
 
 ES 参考五点：
 {json.dumps(es_bullets, ensure_ascii=False)}
@@ -703,7 +854,7 @@ ES Search Terms：
   "search_terms_zh": "中文解释",
   "aplus": [{{"module":1,"title":"","body":"","image_prompt_zh":""}}]
 }}
-A+开关：{'生成5个模块' if include_aplus else '不生成，aplus输出空数组'}。
+A+要求：必须生成5个模块；每个模块包含标题、正文、中文配图提示。
 只输出 JSON。
 """
 
@@ -769,12 +920,14 @@ def compress_candidates_prompt(lang: str, cands: List[Dict[str, str]]) -> str:
 
 标题预算：{title_budget_text()}
 A/B/C取舍：{must_inherit_text_for_prompt()}
+ES人工意图记录：{intent_prompt_text()}
 
 压缩规则：
 - 必须保留A级信息。
 - B级只保留最重要的 1-2 个，不要堆满所有场景。
 - C级全部移到五点/描述，不要放标题。
 - 目标长度：140-{target_title_max()} 字符；绝对不能超过200。
+- 禁止出现 halogen/卤素、incandescent/白炽、Edison、traditional/tradicional、standard bulb 等高风险灯泡词。
 - 如果 ES 标题已经很长，不要逐字翻译；要本地化压缩。
 
 最终 ES 标题：
@@ -984,6 +1137,169 @@ def socket_conflict_warning() -> str:
     return ""
 
 
+
+# ------------------------- ES human intent ledger -------------------------
+INTENT_SYNONYMS = {
+    # Concept IDs are the bridge between ES supervisor decisions and localized marketplace wording.
+    # Keep these lists broad: the risk engine must recognize a good local title instead of creating false warnings.
+    "covered_outdoor": ("有遮蔽户外/室外使用", [
+        "exterior cubierto", "exteriores cubiertos", "uso exterior cubierto", "outdoor", "covered outdoor", "covered exterior", "covered outdoor use",
+        "extérieur couvert", "exterieur couvert", "extérieur abrité", "exterieur abrite", "espace extérieur abrité", "extérieur sous abri",
+        "esterni coperti", "esterno coperto", "spazi esterni coperti", "aree esterne coperte",
+        "exterior coberto", "áreas exteriores cobertas", "areas exteriores cobertas", "espaços exteriores cobertos", "espacos exteriores cobertos",
+        "overdekte buitenruimte", "overdekte buitenruimtes", "overdekte buitenruimten", "overdekt buiten", "beschutte buitenomgeving", "beschutte buitenruimtes",
+        "geschützter außenbereich", "geschützte außenbereiche", "geschuetzter aussenbereich", "geschuetzte aussenbereiche", "überdachte terrasse", "ueberdachte terrasse", "überdacht", "ueberdacht",
+        "pod zadaszeniem", "na zewnątrz pod zadaszeniem", "na zewnatrz pod zadaszeniem", "zadaszone miejsca", "zadaszonych miejsc", "miejsca pod zadaszeniem",
+        "skyddad utomhus", "skyddade utomhus", "skyddad utomhusmiljö", "skyddade utomhusmiljöer", "skyddade utomhusmiljoer", "utomhus under tak",
+        "有遮蔽户外", "遮蔽户外", "有顶户外", "室外", "户外", "阳台", "露台", "庭院"
+    ]),
+    "bathroom": ("浴室/潮湿区域", [
+        "baño", "bano", "zona húmeda", "zona humeda", "zonas húmedas", "zonas humedas", "bathroom", "damp area", "damp areas", "moisture-prone",
+        "salle de bains", "salle de bain", "zone humide", "zones humides", "bagno", "zone umide", "casa de banho", "zonas húmidas", "zonas humidas",
+        "bad", "badezimmer", "feuchtraum", "feuchträume", "feuchtraeume", "badkamer", "vochtige ruimte", "vochtige ruimtes",
+        "łazienka", "lazienka", "strefa wilgotna", "strefy wilgotne", "badrum", "fuktiga utrymmen", "fuktigt utrymme", "浴室", "卫生间", "潮湿区域"
+    ]),
+    "ip54": ("IP54", ["ip54"]),
+    "ip44": ("IP44", ["ip44"]),
+    "up_down_light": ("上下出光", [
+        "luz arriba y abajo", "iluminación arriba y abajo", "iluminacion arriba y abajo", "luz hacia arriba y abajo", "arriba y abajo",
+        "up and down", "up & down", "up-and-down", "up and down lighting", "light upwards and downwards", "upwards and downwards",
+        "lumière vers le haut et le bas", "lumiere vers le haut et le bas", "éclairage haut et bas", "eclairage haut et bas", "haut et bas", "vers le haut et le bas",
+        "lichtaustritt nach oben und unten", "licht nach oben und unten", "nach oben und unten", "oben und unten", "oben unten", "up-&-down-licht", "up and down licht",
+        "luce sopra e sotto", "emissione sopra e sotto", "luce verso l’alto e verso il basso", "luce verso l'alto e verso il basso", "verso l’alto e verso il basso", "verso l'alto e verso il basso",
+        "luz para cima e para baixo", "iluminação para cima e para baixo", "iluminacao para cima e para baixo", "cima e baixo",
+        "licht omhoog en omlaag", "omhoog en omlaag", "licht naar boven en beneden", "naar boven en beneden", "licht naar boven en naar beneden", "omhoog omlaag",
+        "światło góra-dół", "swiatlo gora-dol", "światło ku górze i ku dołowi", "swiatlo ku gorze i ku dolowi", "świeci w górę i w dół", "swieci w gore i w dol", "góra-dół", "gora-dol",
+        "ljus uppåt och nedåt", "ljus uppat och nedat", "uppåt och nedåt", "uppat och nedat", "upp- och ned", "upp och ned",
+        "上下出光", "上下双向", "上下发光", "上出光", "下出光"
+    ]),
+    "integrated_led": ("内置LED", [
+        "led integrado", "led integrados", "integrated led", "built-in led", "led intégré", "led intégrée", "led integre", "led integrato", "led integrata", "led integrada",
+        "geïntegreerde led", "geintegreerde led", "integrierte led", "zintegrowany led", "zintegrowane led", "integrerad led", "内置led", "集成led", "内置 LED"
+    ]),
+    "white_aluminium": ("白色铝材", ["aluminio blanco", "white aluminium", "aluminium blanc", "alluminio bianco", "alumínio branco", "aluminio branco", "weißes aluminium", "weisses aluminium", "wit aluminium", "biała alumini", "biala alumini", "vit aluminium", "白色铝"]),
+    "black_aluminium": ("黑色铝材", ["aluminio negro", "black aluminium", "aluminium noir", "alluminio nero", "alumínio preto", "aluminio preto", "schwarzes aluminium", "schwarzem aluminium", "zwart aluminium", "czarne aluminium", "czarnego aluminium", "svart aluminium", "黑色铝"]),
+    "frosted_glass": ("磨砂玻璃/哑光玻璃", [
+        "cristal mate", "vidrio mate", "vidrio esmerilado", "cristal esmerilado", "frosted glass", "matt glass", "matte glass", "frosted glass diffuser",
+        "verre dépoli", "verre depoli", "verre mat", "verre satiné", "verre satine", "diffuseur en verre satiné", "diffuseur en verre depoli",
+        "satiniertes glas", "satiniertem glas", "mattglas", "matter glasdiffusor", "diffusor aus satiniertem glas", "glasdiffusor",
+        "vetro satinato", "diffusore in vetro satinato", "vetro opaco", "vidro mate", "vidro fosco", "difusor em vidro mate", "difusor em vidro fosco",
+        "matglas", "matglas diffuser", "diffuser van matglas", "diffuser van mat glas", "mat glas", "diffuser van matglas",
+        "matowe szkło", "matowego szkła", "matowy szklany dyfuzor", "szklany dyfuzor", "frostat glas", "frostade glaset", "磨砂玻璃", "哑光玻璃", "乳白玻璃"
+    ]),
+    "no_halogen": ("禁止卤素/白炽/Edison/传统灯泡词", ["halogen", "halógena", "halogène", "incandescent", "incandescente", "edison", "traditional", "tradicional", "standard bulb", "卤素", "白炽"]),
+    "no_single_light_count": ("禁止单灯数量词", ["1 foco", "1 luz", "1 spot", "1 light", "1-flammig", "1 luce", "1 licht", "1 punkt", "单头", "单灯"]),
+    "no_plug": ("禁止插头线/插头，除非事实确认有", ["enchufe", "plug", "plug-in", "stecker", "prise", "spina", "ficha", "插头线", "插头"]),
+    "no_remote": ("禁止遥控，除非事实确认有", ["mando", "remote", "télécommande", "telecommande", "telecomando", "fernbedienung", "遥控"]),
+    "demote_3d_dimensions": ("三维尺寸放五点/描述，不强制进标题", ["172 x", "90 x", "28 mm", "尺寸", "dimensions", "dimensiones"]),
+}
+
+def split_intent_items(text: str) -> List[str]:
+    items = []
+    for part in re.split(r"[\n,，;；|]+", text or ""):
+        p = clean_text(part.strip(" -•*"))
+        if p and p not in items:
+            items.append(p)
+    return items
+
+
+def add_unique_intent(key: str, items: List[str]) -> None:
+    cur = split_intent_items(st.session_state.get(key, ""))
+    for item in items:
+        it = clean_text(item)
+        if it and it not in cur:
+            cur.append(it)
+    st.session_state[key] = "；".join(cur)
+
+
+def concept_key_for_text(text: str) -> str | None:
+    low = clean_text(text).lower()
+    for key, (zh, kws) in INTENT_SYNONYMS.items():
+        if low == key or zh.lower() in low or concept_match_any(low, kws):
+            return key
+    return None
+
+
+def localize_intent_keywords(items: List[str]) -> List[Tuple[str, str, List[str]]]:
+    out = []
+    for raw in items:
+        item = clean_text(raw)
+        if not item:
+            continue
+        ck = concept_key_for_text(item)
+        if ck and ck in INTENT_SYNONYMS:
+            zh, kws = INTENT_SYNONYMS[ck]
+            out.append((f"intent_{ck}", zh, kws + [item]))
+        else:
+            out.append(("intent_" + re.sub(r"\W+", "_", item.lower())[:32], item, [item]))
+    # de-dupe by key
+    seen, ret = set(), []
+    for x in out:
+        if x[0] not in seen:
+            seen.add(x[0]); ret.append(x)
+    return ret
+
+
+def intent_ledger_text() -> str:
+    inc = split_intent_items(st.session_state.get("es_intent_include", ""))
+    exc = split_intent_items(st.session_state.get("es_intent_exclude", ""))
+    dem = split_intent_items(st.session_state.get("es_intent_demote", ""))
+    lines = []
+    lines.append("ES人工意图记录（主管在西语阶段的加词/否词，会同步到多国语言）：")
+    lines.append("必须保留概念：" + ("、".join(inc) if inc else "无"))
+    lines.append("禁止出现概念：" + ("、".join(exc) if exc else "无"))
+    lines.append("可降级到五点/描述：" + ("、".join(dem) if dem else "无"))
+    return "\n".join(lines)
+
+
+def infer_intent_from_instruction(text: str, title_after: str = "") -> None:
+    """Cheap deterministic intent recorder. It does not call the API.
+    It captures obvious supervisor decisions from Chinese/Spanish ES title chat.
+    """
+    raw = clean_text(text or "")
+    combined = (raw + " " + clean_text(title_after or "")).lower()
+    include = []
+    exclude = []
+    demote = []
+    # Must-keep concepts.
+    if any(x in combined for x in ["户外", "室外", "exterior", "outdoor", "balc", "terra", "patio", "covered", "cubierto", "有遮蔽"]):
+        include.append("有遮蔽户外/室外使用")
+    if any(x in combined for x in ["浴室", "卫生间", "baño", "bathroom", "salle de bains", "bagno", "casa de banho", "badkamer", "badezimmer"]):
+        include.append("浴室/潮湿区域")
+    if "ip54" in combined: include.append("IP54")
+    if "ip44" in combined: include.append("IP44")
+    if any(x in combined for x in ["上下", "arriba y abajo", "up and down", "up&down", "haut et bas", "sopra e sotto", "cima e baixo", "omhoog", "omlaag", "oben und unten", "góra", "dol", "uppåt", "nedåt"]):
+        include.append("上下出光")
+    if any(x in combined for x in ["内置led", "集成led", "led integrado", "integrated led"]):
+        include.append("内置LED")
+    if any(x in combined for x in ["白色铝", "aluminio blanco", "white aluminium", "aluminium blanc"]):
+        include.append("白色铝材")
+    if any(x in combined for x in ["黑色铝", "aluminio negro", "black aluminium", "aluminium noir", "alumínio preto", "zwart aluminium", "schwarzes aluminium"]):
+        include.append("黑色铝材")
+    if any(x in combined for x in ["磨砂玻璃", "哑光玻璃", "cristal mate", "vidrio mate", "frosted glass", "verre dépoli", "verre satiné", "vetro satinato", "vidro fosco", "matglas", "satiniertes glas", "frostat glas"]):
+        include.append("磨砂玻璃/哑光玻璃")
+    # Exclusions and demotions.
+    if any(x in combined for x in ["不要写 1", "不要1", "别写1", "单头不用", "单灯不用", "1 foco", "1 luz", "1 spot"]):
+        exclude.append("禁止单灯数量词")
+    if any(x in combined for x in ["卤素", "halogen", "halógen", "edison", "traditional", "tradicional", "白炽", "incandescent"]):
+        exclude.append("禁止卤素/白炽/Edison/传统灯泡词")
+    if any(x in combined for x in ["不要写插头", "别写插头", "不要插头", "plug", "enchufe"]) and any(x in combined for x in ["不要", "别", "禁止", "sin", "no "]):
+        exclude.append("禁止插头线/插头，除非事实确认有")
+    if any(x in combined for x in ["遥控", "remote", "mando", "télécommande", "fernbedienung"]) and any(x in combined for x in ["不要", "别", "禁止", "sin", "no "]):
+        exclude.append("禁止遥控，除非事实确认有")
+    if any(x in combined for x in ["尺寸不要", "不要放尺寸", "三维尺寸", "放五点", "放描述"]):
+        demote.append("三维尺寸放五点/描述，不强制进标题")
+    if include: add_unique_intent("es_intent_include", include)
+    if exclude: add_unique_intent("es_intent_exclude", exclude)
+    if demote: add_unique_intent("es_intent_demote", demote)
+    if include or exclude or demote:
+        hist = st.session_state.setdefault("es_intent_history", [])
+        hist.append({"input": raw, "include": include, "exclude": exclude, "demote": demote})
+
+
+def intent_prompt_text() -> str:
+    return intent_ledger_text() + "\n规则：必须保留概念要本地化表达；禁止出现概念及其同义词不得出现在标题、五点、描述、Search Terms、A+。可降级信息不要硬塞标题。"
+
 def concept_match_any(text: str, kws: List[str]) -> bool:
     """Semantic keyword matcher with fewer false positives.
     - Long phrases may match by substring.
@@ -1091,12 +1407,27 @@ def current_core_concepts() -> Dict[str, List[Tuple[str, str, List[str]]]]:
     if pt:
         a.append(pt)
 
+    # Supervisor ES intent ledger: human add/deny decisions from ES title loop become global title constraints.
+    for item in localize_intent_keywords(split_intent_items(st.session_state.get("es_intent_include", ""))):
+        a.append(item)
+    for item in localize_intent_keywords(split_intent_items(st.session_state.get("es_intent_demote", ""))):
+        c.append(item)
+
+    # Wall light + IP/outdoor evidence: indoor/outdoor is a title-level distinction for wall lights.
+    fc_blob = " ".join(str(fc.get(k, "")) for k in ["indoor_outdoor", "spaces", "core_selling_points", "must_keep_in_titles", "notes_for_copy"])
+    wallish = pt and pt[0] == "product_wall"
+    if wallish and concept_match_any(es + " " + fc_blob, INTENT_SYNONYMS["covered_outdoor"][1] + ["ip44", "ip54"]):
+        a.append(("intent_covered_outdoor_auto", "有遮蔽户外/室外使用", INTENT_SYNONYMS["covered_outdoor"][1]))
+
     for sock in current_socket_tokens():
         a.append((f"socket_{sock}", f"{sock}灯头/光源", [sock.lower()]))
 
     for d in extract_key_dimensions(es):
-        # Dimensions in the final ES title are usually intentional, keep as A.
-        a.append((f"dim_{d}", f"关键尺寸 {d}", dim_variants(d)))
+        # Diameter/obvious single visual dimensions are useful in title; full 3D dimensions usually belong in bullets.
+        if "x" in d.lower() or "×" in d:
+            c.append((f"dim_{d}", f"三维尺寸 {d}", dim_variants(d)))
+        else:
+            a.append((f"dim_{d}", f"关键尺寸 {d}", dim_variants(d)))
 
     # Main color/material combinations.
     concepts = [
@@ -1104,7 +1435,7 @@ def current_core_concepts() -> Dict[str, List[Tuple[str, str, List[str]]]]:
         ("black", "黑色", ["negro", "black", "nero", "preto", "schwarz", "zwart", "czarn", "svart", "黑"]),
         ("gold", "金色/黄铜色", ["dorado", "gold", "oro", "ottone", "messing", "złot", "zlot", "guld", "金色", "黄铜", "latón", "laton", "brass"]),
         ("natural_wood", "天然木/原木", ["madera", "wood", "bois", "legno", "madeira", "holz", "hout", "drewno", "trä", "tra", "木"]),
-        ("metal", "金属材质", ["metal", "metálic", "metalic", "metallo", "métal", "metall", "staal", "stål", "stal", "金属", "钢", "acero"]),
+        ("metal", "金属材质", ["metal", "metálic", "metalic", "metallo", "métal", "metall", "staal", "stål", "stal", "金属", "钢", "acero", "aluminio", "aluminium", "alluminio", "alumínio", "aluminiowa", "aluminiumkropp", "铝"]),
         ("glass", "玻璃材质", ["cristal", "vidrio", "glass", "verre", "vetro", "glas", "szkło", "szklo", "玻璃"]),
     ]
     for key, zh, kws in concepts:
@@ -1190,6 +1521,38 @@ def must_inherit_text_for_prompt() -> str:
     return concepts_for_prompt()
 
 
+
+def matched_core_concepts(title: str, tier: str = "A") -> List[str]:
+    """Trusted rule-based concept recognition for the current title.
+    Used to show newbies what the system actually detected, and to remove model false alarms.
+    """
+    t = clean_text(title)
+    out: List[str] = []
+    for key, zh, kws in current_core_concepts().get(tier, []):
+        if concept_match_any(t, kws) and zh not in out:
+            out.append(zh)
+    return out
+
+
+def trusted_missing_core_concepts(title: str, tier: str = "A") -> List[str]:
+    t = clean_text(title)
+    missing: List[str] = []
+    for key, zh, kws in current_core_concepts().get(tier, []):
+        if not concept_match_any(t, kws):
+            missing.append(zh)
+    return missing
+
+
+def recognized_concepts_summary(title: str, max_items: int = 8) -> str:
+    items = matched_core_concepts(title, "A")
+    if not items:
+        return ""
+    txt = "、".join(items[:max_items])
+    if len(items) > max_items:
+        txt += f" 等{len(items)}项"
+    return txt
+
+
 def missing_concepts_by_tier(title: str) -> Dict[str, List[str]]:
     t = clean_text(title)
     cc = current_core_concepts()
@@ -1222,17 +1585,23 @@ def title_soft_issues(title: str, lang: str = "") -> List[str]:
     low_value = ["bombilla no incluida", "bulbs not included", "ampoule non incluse", "lampadine non incluse", "lâmpada não incluída", "leuchtmittel nicht enthalten", "żarówka nie", "ljuskälla ingår inte"]
     if any(x in t.lower() for x in low_value):
         issues.append("标题写了灯泡不含，建议放五点而不是标题")
+    # Supervisor exclusion concepts: if they appear, this is at least a soft risk and cannot be bulk-confirmed.
+    for key, zh, kws in localize_intent_keywords(split_intent_items(st.session_state.get("es_intent_exclude", ""))):
+        if concept_match_any(t, kws):
+            issues.append("触发ES禁止概念：" + zh)
     conflict = socket_conflict_warning()
     if conflict:
         issues.append(conflict)
     return issues
 
 
-def sanitize_model_risk(risk: str) -> str:
+def sanitize_model_risk(risk: str, title: str = "") -> str:
     """Remove model-hallucinated or low-confidence risk notes.
 
-    The model often invents missing sockets/colors from a previous product or from
-    loose wording. The rule-based risk engine is the source of truth for hard risks.
+    V17.11 principle: the LLM may suggest risks, but only the deterministic
+    rule engine decides what a newbie should see. Generic "missing core info"
+    notes from the model create many false alarms, especially after localization
+    (e.g. NL "licht omhoog en omlaag", "matglas diffuser").
     """
     r = clean_text(risk)
     if not r:
@@ -1240,19 +1609,25 @@ def sanitize_model_risk(risk: str) -> str:
     sockets = set(current_socket_tokens())
     all_sockets = {"E27", "E14", "G9", "GU10", "GU5.3", "G4"}
     wrong = [x for x in all_sockets if x not in sockets]
-    missing_words = ["缺失", "未写", "missing", "manque", "manca", "fehlt", "brak", "saknar"]
+    missing_words = ["缺失", "未写", "没有写", "missing", "manque", "manca", "fehlt", "brak", "saknar", "falta"]
     parts = re.split(r"[;；。]\s*", r)
     kept = []
     current_keys = {x[0] for tier in current_core_concepts().values() for x in tier}
+    matched_zh = set(matched_core_concepts(title, "A") + matched_core_concepts(title, "B")) if title else set()
     for part in parts:
-        pl = part.lower()
+        pl = part.lower().strip()
+        if not pl:
+            continue
         # Drop clauses mentioning a wrong socket as missing.
         if any(ws.lower() in pl for ws in wrong) and any(k in pl for k in missing_words):
             continue
-        # Drop generic LLM-generated missing-core clauses; code-generated checks are shown separately.
-        if ("缺失a级" in pl or "缺失核心" in pl or "missing core" in pl) and any(k in pl for k in missing_words + ["缺失"]):
+        # Drop all LLM-generated missing-core notes. Actual missing concepts are added by title_soft_issues().
+        if any(k in pl for k in missing_words) and any(x in pl for x in ["核心", "a级", "a級", "core", "info", "información", "information", "信息"]):
             continue
-        # Do not let hallucinated gold/brass notes disturb wood products unless gold is current.
+        # If a matched concept is mentioned as missing, it is definitely a false alarm.
+        if any(k in pl for k in missing_words) and any(zh.lower() in pl for zh in matched_zh):
+            continue
+        # Do not let hallucinated gold/brass notes disturb wood/black/white aluminium products unless gold is current.
         if any(x in pl for x in ["金色", "黄铜", "gold", "brass", "dorado", "latón", "laton", "messing", "ottone"]) and "gold" not in current_keys:
             continue
         kept.append(part)
@@ -1260,7 +1635,7 @@ def sanitize_model_risk(risk: str) -> str:
 
 def title_blocking_issues(title: str, lang: str = "") -> List[str]:
     issues = title_quality_issues(title, lang)
-    hard_words = ["标题为空", "标题超长", "品牌 Alpinaluz 没有放第一位", "标题含中文", "标题含 SKU", "出现裸 cm"]
+    hard_words = ["标题为空", "标题超长", "品牌 Alpinaluz 没有放第一位", "标题含中文", "标题含 SKU", "出现裸 cm", "高风险灯泡禁词"]
     return [x for x in issues if any(w in x for w in hard_words)]
 
 
@@ -1286,8 +1661,8 @@ def candidate_score(c: Dict[str, str], lang: str) -> int:
             score -= 24
         elif "B级信息" in issue:
             score -= 5
-        elif "灯泡不含" in issue:
-            score -= 14
+        elif "灯泡不含" in issue or "触发ES禁止概念" in issue:
+            score -= 24
         elif "不一致" in issue:
             score -= 30
         else:
@@ -1326,7 +1701,7 @@ def auto_confirmable_title(title: str, lang: str) -> bool:
         return False
     soft = title_soft_issues(title, lang)
     # A-level missing, single-light count, socket conflict or low-value title text cannot be auto-confirmed.
-    risky = [x for x in soft if ("缺失A级" in x or "单灯产品" in x or "不一致" in x or "灯泡不含" in x)]
+    risky = [x for x in soft if ("缺失A级" in x or "单灯产品" in x or "不一致" in x or "灯泡不含" in x or "触发ES禁止概念" in x)]
     if risky:
         return False
     n = len(clean_text(title))
@@ -1345,6 +1720,45 @@ def title_status_for_lang(lang: str) -> Tuple[str, str, str]:
         return "s-bad", "需修改", current
     return "s-warn", "AI推荐待确认", current
 
+
+
+
+def forbidden_bulb_hits(text: str) -> List[str]:
+    """Return high-risk bulb words that Amazon/EU marketplace should not see."""
+    hits: List[str] = []
+    src = text or ""
+    for pat in BULB_FORBIDDEN_PATTERNS:
+        for m in re.finditer(pat, src, flags=re.I):
+            h = clean_text(m.group(0))
+            if h and h.lower() not in [x.lower() for x in hits]:
+                hits.append(h)
+    return hits
+
+
+def sanitize_forbidden_bulb_text(text: str) -> str:
+    """Remove/neutralize high-risk bulb family wording while preserving LED/socket facts."""
+    if not text:
+        return ""
+    t = str(text)
+    # Common compatibility phrases from earlier versions; collapse them to LED-only wording.
+    replacements = [
+        (r"LED\s*,?\s*Edison\s*(?:or|y|e|oder|ou|o|lub)?\s*(?:standard|est[aá]ndar|tradicional(?:es)?|traditional)?\s*(?:bulbs?|bombillas?|lampadine|ampoules?|l[aâ]mpadas?|Leuchtmittel|lampen)?", "LED bulbs"),
+        (r"LED[-\s]*,?\s*Edison[-\s]*(?:oder)?\s*Standard(?:lampen|leuchtmittel)?", "LED-Lampen"),
+        (r"LED\s*,?\s*Edison\s*(?:ou)?\s*standard", "LED"),
+        (r"LED\s*,?\s*Edison\s*(?:o)?\s*standard", "LED"),
+        (r"LED\s*,?\s*Edison\s*(?:lub)?\s*standardowe", "LED"),
+    ]
+    for pat, repl in replacements:
+        t = re.sub(pat, repl, t, flags=re.I)
+    # Remove forbidden words themselves if they remain.
+    for pat in BULB_FORBIDDEN_PATTERNS:
+        t = re.sub(pat, "", t, flags=re.I)
+    # Cleanup repeated separators/spaces left by removal.
+    t = re.sub(r"\s+([,;:.])", r"\1", t)
+    t = re.sub(r"([,;])\s*([,;])", r"\1", t)
+    t = re.sub(r"\(\s*\)", "", t)
+    t = re.sub(r"\s{2,}", " ", t).strip(" ,;.-")
+    return clean_text(t)
 
 def title_quality_issues(title: str, lang: str = "") -> List[str]:
     """Hard/format issues. Soft operating risks are handled by title_soft_issues()."""
@@ -1369,6 +1783,9 @@ def title_quality_issues(title: str, lang: str = "") -> List[str]:
         issues.append("标题含 SKU / 型号代码")
     if has_naked_cm(t):
         issues.append("出现裸 cm，前面没有具体数字")
+    forbidden = forbidden_bulb_hits(t)
+    if forbidden:
+        issues.append("标题含 Amazon 高风险灯泡禁词：" + ", ".join(forbidden[:4]))
     return issues
 
 
@@ -1376,7 +1793,7 @@ def candidate_display_risk(c: Dict[str, str], lang: str) -> str:
     title = c.get("title", "")
     issues = title_quality_issues(title, lang)
     soft = title_soft_issues(title, lang)
-    model_risk = sanitize_model_risk(c.get("risk", ""))
+    model_risk = sanitize_model_risk(c.get("risk", ""), title)
     parts = []
     if issues:
         parts.extend(issues)
@@ -1402,6 +1819,9 @@ def render_title_length_box(title: str, lang: str) -> bool:
     else:
         msg += "｜可确认"
     st.markdown(f"<div class='{cls}'>{html.escape(msg)}</div>", unsafe_allow_html=True)
+    rec = recognized_concepts_summary(title)
+    if rec and not blocking:
+        st.markdown(f"<div class='zhbox'><b>规则已识别核心：</b>{html.escape(rec)}</div>", unsafe_allow_html=True)
     return not blocking
 
 def render_candidate_cards(cands: List[Dict[str, str]], lang: str, prefix: str, compact: bool = None) -> None:
@@ -1429,12 +1849,15 @@ def render_candidate_cards(cands: List[Dict[str, str]], lang: str, prefix: str, 
             badges.append("当前标题")
         if not badges:
             badges.append("备选")
+        recognized = recognized_concepts_summary(title)
+        rec_html = f"<div class='concept-ok'>规则识别：✓ {html.escape(recognized)}</div>" if recognized else ""
         st.markdown(
             f"""<div class='candidate-card {'recommended' if recommended else ''}' style='border-color:{border};'>
             <div class='small-muted'>候选{i+1} · {n}/200 字符 · {html.escape(' / '.join(badges))}</div>
             <div class='candidate-title'>{html.escape(title)}</div>
             <div class='candidate-zh'>中文：{html.escape(zh or '暂无中文解释')}</div>
             <div class='small-muted'>风险/注意：{html.escape(risk)}</div>
+            {rec_html}
             {f"<div class='small-muted'>核心保留：{html.escape(why)}</div>" if why else ""}
             </div>""",
             unsafe_allow_html=True,
@@ -1456,14 +1879,14 @@ def render_candidate_cards(cands: List[Dict[str, str]], lang: str, prefix: str, 
             one_card(i, c)
 
 def clean_listing(data: Dict[str, Any], lang: str) -> Dict[str, Any]:
-    title = normalize_title(st.session_state.get("confirmed_titles", {}).get(lang, "") or data.get("title", ""), lang)
+    title = normalize_title(sanitize_forbidden_bulb_text(st.session_state.get("confirmed_titles", {}).get(lang, "") or data.get("title", "")), lang)
     bullets = data.get("bullets") or []
     bullets_zh = data.get("bullets_zh") or []
     if not isinstance(bullets, list):
         bullets = [str(bullets)]
     if not isinstance(bullets_zh, list):
         bullets_zh = [str(bullets_zh)]
-    bullets = [clean_text(x) for x in bullets if clean_text(x)][:5]
+    bullets = [sanitize_forbidden_bulb_text(clean_text(x)) for x in bullets if clean_text(x)][:5]
     bullets_zh = [clean_text(x) for x in bullets_zh if clean_text(x)][:5]
     while len(bullets) < 5:
         bullets.append("")
@@ -1472,16 +1895,23 @@ def clean_listing(data: Dict[str, Any], lang: str) -> Dict[str, Any]:
     aplus = data.get("aplus") or []
     if not isinstance(aplus, list):
         aplus = []
+    cleaned_aplus = []
+    for m in aplus[:5]:
+        if isinstance(m, dict):
+            mm = dict(m)
+            mm["title"] = sanitize_forbidden_bulb_text(mm.get("title", ""))
+            mm["body"] = sanitize_forbidden_bulb_text(mm.get("body", ""))
+            cleaned_aplus.append(mm)
     return {
         "title": title,
         "title_zh": clean_text(data.get("title_zh") or st.session_state.get("confirmed_title_zh", {}).get(lang, "")),
         "bullets": bullets[:5],
         "bullets_zh": bullets_zh[:5],
-        "description": str(data.get("description", "")).strip(),
+        "description": sanitize_forbidden_bulb_text(str(data.get("description", "")).strip()),
         "description_zh": str(data.get("description_zh", "")).strip(),
-        "search_terms": clean_text(data.get("search_terms", ""))[:250],
+        "search_terms": sanitize_forbidden_bulb_text(clean_text(data.get("search_terms", "")))[:250],
         "search_terms_zh": str(data.get("search_terms_zh", "")).strip(),
-        "aplus": aplus[:5],
+        "aplus": cleaned_aplus[:5],
     }
 
 
@@ -1543,7 +1973,6 @@ with st.sidebar:
     st.markdown("---")
     st.header("目标国家")
     st.multiselect("选择要做的国家", TARGET_LANGS, default=st.session_state.get("target_langs", TARGET_LANGS), key="target_langs")
-    st.selectbox("正文输出范围", ["标准包：标题+五点+描述+Search Terms", "完整包：标准包+A+"], key="listing_mode")
     st.markdown("---")
     totals = usage_totals()
     st.header("费用估算")
@@ -1559,7 +1988,7 @@ with st.sidebar:
 
 # ------------------------- header -------------------------
 st.title(f"Alpinaluz Listing Generator {APP_VERSION}")
-st.markdown("<div class='info-card'>新流程：①资料与事实卡 → ②ES标题确认 → ③AI预审多国标题 → ④绿色批量确认/黄色人工检查 → ⑤统一生成正文。V17.7 增加低误报风险引擎、多语言产品类型同义词、木色/金色误报修复和更安全的一键确认。</div>", unsafe_allow_html=True)
+st.markdown("<div class='info-card'>新流程：①资料与事实卡 → ②ES标题确认 → ③AI预审多国标题 → ④绿色批量确认/黄色人工检查 → ⑤统一生成完整正文包。V17.11 固定输出全套内容（标题+五点+描述+Search Terms+A+），保留 ES 人工意图同步，并加入低误报概念识别：多语言标题会识别“上下出光”“磨砂玻璃”“遮蔽户外”等本地表达，减少误判。</div>", unsafe_allow_html=True)
 
 # ------------------------- Section 1: input and facts -------------------------
 st.header("1）资料输入与产品事实卡")
@@ -1571,7 +2000,7 @@ with col1:
     st.text_input("产品系列名（可选，默认不进标题）", key="series", help="例如 SUNSET / TOURS。默认不会强行写入标题，除非它本身是核心搜索词。")
     st.text_area("旧 Amazon / 网站内容（标题、五点、长描述可一起粘贴）", key="old_content", height=180)
     st.text_area("手动标题 / 原始标题（推荐填）", key="manual_title", height=80)
-    st.text_area("技术备注（不能错的事实）", key="tech_notes", height=100, placeholder="例如：E27灯头，灯泡不含；最大40W；不是LED集成；尺寸Ø18 cm；材质金属+玻璃。")
+    st.text_area("技术备注（不能错的事实）", key="tech_notes", height=100, placeholder="例如：E27灯头，灯泡不含；最大40W；壁灯带插头线和线控开关/或直接接线；不是LED集成；尺寸Ø18 cm；材质金属+玻璃。")
     st.text_area("SEO关键词（可选）", key="seo_keywords", height=70)
     st.text_area("手动长描述（可选）", key="manual_description", height=100)
     uploads = st.file_uploader("上传图片（建议最多3张：主图/尺寸图/细节图）", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True)
@@ -1602,12 +2031,21 @@ with col2:
             st.error(str(e))
     fc = st.session_state.get("fact_card", {}) or {}
     if fc:
+        st.markdown(f"<div class='ok'><b>中文事实速览：</b>{html.escape(fact_summary_zh())}</div>", unsafe_allow_html=True)
+        st.caption("新手先看上面的中文速览：产品类型、灯头、尺寸、材质、颜色、是否含灯泡如果大方向正确，再检查下面重点字段。")
+        st.markdown("<div class='info-card'><b>新手重点：</b>供电方式、是否带插头线、是否带开关、开关位置、灯头/是否内置LED 必须尽量确认。未确认的内容不要写有，也不要写没有。壁灯如果确认带插头线+开关，这是标题核心卖点；如果确认直接接线，就不能写插头线。</div>", unsafe_allow_html=True)
         for k in FACT_KEYS:
             val = fc.get(k, "")
             if isinstance(val, list):
                 val = ", ".join(str(x) for x in val)
             label = f"{FACT_LABELS.get(k, k)}（{k}）"
-            new_val = st.text_area(label, value=str(val or ""), key=f"fact_edit::{k}", height=60 if k not in ["core_selling_points", "must_keep_in_titles", "do_not_claim", "notes_for_copy"] else 95)
+            usage = FACT_USAGE.get(k, "生成文案用：请人工确认。")
+            zh_hint = fact_value_zh_hint(val)
+            st.markdown(
+                f"<div class='small-muted'><b>{html.escape(label)}</b> ｜ {html.escape(usage)}<br>中文参考：{html.escape(zh_hint)}</div>",
+                unsafe_allow_html=True,
+            )
+            new_val = st.text_area(label, value=str(val or ""), key=f"fact_edit::{k}", height=60 if k not in ["core_selling_points", "must_keep_in_titles", "do_not_claim", "notes_for_copy"] else 95, label_visibility="collapsed")
             fc[k] = new_val
         st.session_state["fact_card"] = fc
     else:
@@ -1659,6 +2097,7 @@ with es_btn1:
             base = normalize_title(edited_es_title, "ES")
             st.session_state.setdefault("title_history", {}).setdefault("ES", []).append(base)
             instr = f"请只基于以下当前标题优化，生成新一轮3个候选；不要回到原始标题重新写。\n当前标题：{base}\n修改要求：{st.session_state.get('es_title_chat','') or '在不改变产品事实的前提下，提高亚马逊标题质量，并保持200字符以内。'}"
+            infer_intent_from_instruction(st.session_state.get('es_title_chat',''), base)
             with st.spinner("正在根据当前标题生成下一轮 ES 候选..."):
                 raw = llm(es_title_prompt(instr), "你是 Amazon.es 灯具标题专家。输出严格 JSON。", label="ES标题下一轮")
                 cands = parse_candidates(raw, "ES")
@@ -1681,6 +2120,7 @@ with es_btn2:
 with es_btn3:
     if st.button("确认当前 ES 标题", disabled=not es_can_confirm):
         title = normalize_title(edited_es_title, "ES")
+        infer_intent_from_instruction(st.session_state.get("es_title_chat", ""), title)
         st.session_state["selected_es_title"] = title
         st.session_state.setdefault("confirmed_titles", {})["ES"] = title
         zh = st.session_state.get("selected_es_title_zh") or "已按当前 ES 标题确认，请以标题原文为准。"
@@ -1689,6 +2129,20 @@ with es_btn3:
         st.rerun()
 if not es_can_confirm and edited_es_title:
     st.caption("标题超过200字符、含中文或为空时不能确认。请手动缩短，或在中文修改要求里写“压缩到190字符以内”。")
+
+
+# ------------------------- ES human intent ledger UI -------------------------
+if st.session_state.get("confirmed_titles", {}).get("ES") or st.session_state.get("selected_es_title"):
+    st.markdown("### ES人工意图记录（同步到多国语言）")
+    st.markdown("<div class='info-card'>这里记录你在西班牙标题循环中人工加过/否定过的核心词。多国语言会按这些概念本地化，不需要每个国家重复输入。新手可用中文填写。</div>", unsafe_allow_html=True)
+    i1, i2, i3 = st.columns(3)
+    with i1:
+        st.text_area("必须保留概念（多国标题要本地化体现）", key="es_intent_include", height=90, placeholder="例如：有遮蔽户外/室外使用；IP54；浴室；上下出光；内置LED")
+    with i2:
+        st.text_area("禁止出现概念（多国都不能写）", key="es_intent_exclude", height=90, placeholder="例如：卤素；Edison；traditional；1 foco；插头线；遥控")
+    with i3:
+        st.text_area("可降级到五点/描述（不强制标题）", key="es_intent_demote", height=90, placeholder="例如：三维尺寸；安装细节；密封圈；驱动保护")
+    st.caption("建议：ES标题定稿后，如果你发现必须加一个概念（如户外/浴室/IP54），直接填到这里，再在第3步点“应用ES人工意图重生未确认/建议检查国家”。")
 
 # ------------------------- Section 3: per-language title confirmation -------------------------
 st.header("3）逐国语言标题确认")
@@ -1739,34 +2193,49 @@ else:
             st.success("已确认全部无风险标题。")
             st.rerun()
     if auto_blocked:
-        st.markdown(f"<div class='warn'>这些国家仍需人工检查（硬风险或软风险）：{', '.join(auto_blocked)}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='warn'>这些国家仍需人工检查（硬风险或真实缺失）：{', '.join(auto_blocked)}</div>", unsafe_allow_html=True)
 
-    batch_col1, batch_col2 = st.columns([1, 2])
+    def generate_batch_for_langs(langs_to_gen: List[str], label: str) -> None:
+        if not langs_to_gen:
+            st.info("没有需要处理的国家。")
+            return
+        try:
+            with st.spinner(f"正在批量生成/重生多国标题候选：{', '.join(langs_to_gen)}..."):
+                raw = llm(batch_lang_title_prompt(langs_to_gen), "你是多国 Amazon 灯具标题本地化专家。必须执行ES人工意图记录，输出严格 JSON。", label=label)
+                result = parse_batch_candidates(raw, langs_to_gen)
+                for lang, cands2 in result.items():
+                    cands2 = maybe_auto_compress_candidates(lang, cands2, label)
+                    st.session_state.setdefault("title_candidates", {})[lang] = cands2
+                    bump_lang_version(lang)
+                    if cands2:
+                        auto_select_best_candidate(lang, cands2)
+                missing_batch = [l for l in langs_to_gen if not result.get(l)]
+                if missing_batch:
+                    st.warning("这些语言批量解析失败，可逐国生成：" + ", ".join(missing_batch))
+                notify_done("多国标题候选已生成")
+                st.rerun()
+        except Exception as e:
+            st.error(str(e))
+
+    batch_col1, batch_col2, batch_col3 = st.columns([1, 1, 2])
     with batch_col1:
-        if st.button("一键批量生成所有未生成国家首轮标题候选（推荐）"):
-            langs_to_gen = [l for l in target_langs if not st.session_state.get("title_candidates", {}).get(l)]
-            if not langs_to_gen:
-                st.info("所有目标国家已经有候选标题。")
-            else:
-                try:
-                    with st.spinner("正在一次性生成多国首轮标题候选..."):
-                        raw = llm(batch_lang_title_prompt(langs_to_gen), "你是多国 Amazon 灯具标题本地化专家。输出严格 JSON。", label="多国标题首轮批量")
-                        result = parse_batch_candidates(raw, langs_to_gen)
-                        for lang, cands2 in result.items():
-                            cands2 = maybe_auto_compress_candidates(lang, cands2, "多国首轮")
-                            st.session_state.setdefault("title_candidates", {})[lang] = cands2
-                            bump_lang_version(lang)
-                            if cands2:
-                                auto_select_best_candidate(lang, cands2)
-                        missing_batch = [l for l in langs_to_gen if not result.get(l)]
-                        if missing_batch:
-                            st.warning("这些语言批量解析失败，可逐国生成：" + ", ".join(missing_batch))
-                        notify_done("多国首轮标题候选已生成")
-                        st.rerun()
-                except Exception as e:
-                    st.error(str(e))
+        if st.button("一键生成未生成国家首轮候选"):
+            langs_to_gen = [l for l in target_langs if not st.session_state.get("title_candidates", {}).get(l) and not st.session_state.get("confirmed_titles", {}).get(l)]
+            generate_batch_for_langs(langs_to_gen, "多国标题首轮批量")
     with batch_col2:
-        st.caption("候选卡片会显示标题全文、中文解释和风险。标题超过200字符会标红，并禁止确认。")
+        if st.button("应用ES人工意图重生未确认/建议检查国家"):
+            langs_to_regen = []
+            for l in target_langs:
+                if st.session_state.get("confirmed_titles", {}).get(l):
+                    continue
+                cur = st.session_state.get(f"current_title::{l}", "")
+                if (not cur) or title_soft_issues(cur, l) or title_blocking_issues(cur, l):
+                    langs_to_regen.append(l)
+            if not langs_to_regen:
+                langs_to_regen = [l for l in target_langs if not st.session_state.get("confirmed_titles", {}).get(l)]
+            generate_batch_for_langs(langs_to_regen, "应用ES人工意图重生")
+    with batch_col3:
+        st.caption("如果ES阶段补了关键词/否定词（如户外、IP54、不要1 foco），先填在第2步的ES人工意图记录，再点“应用ES人工意图”。系统只重生未确认/建议检查国家，不覆盖已确认标题。")
 
     tabs = st.tabs(target_langs)
     for tab, lang in zip(tabs, target_langs):
@@ -1865,8 +2334,9 @@ status_cols[2].metric("目标语言", len(selected_langs))
 if missing:
     st.warning("还有标题未确认：" + ", ".join(missing) + "。标题未确认前不建议生成正文。")
 else:
-    include_aplus = st.session_state.get("listing_mode", "").startswith("完整包")
-    if st.button("逐国生成所有正文（标题不再修改）"):
+    include_aplus = True
+    st.markdown("<div class='ok'>正文将固定生成完整包：标题 + 五点 + 描述 + Search Terms + A+，不再提供标准包选项，避免漏选。</div>", unsafe_allow_html=True)
+    if st.button("逐国生成完整正文包（含 A+，标题不再修改）"):
         for lang in selected_langs:
             try:
                 with st.spinner(f"正在生成 {lang} 正文..."):
