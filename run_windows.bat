@@ -1,10 +1,10 @@
 @echo off
 cd /d %~dp0
 echo ========================================
-echo  Alpinaluz Listing Generator V18.2.8
+echo  Alpinaluz Listing Generator V17.11
 echo ========================================
 if not exist .venv (
-  py -m venv .venv
+    py -3 -m venv .venv
 )
 call .venv\Scripts\activate
 python -m pip install --upgrade pip

@@ -5,7 +5,7 @@ import re
 import html
 import hashlib
 import zipfile
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Dict, List, Tuple
 
 import streamlit as st
@@ -16,13 +16,7 @@ try:
 except Exception:  # pragma: no cover
     OpenAI = None
 
-APP_VERSION = "V18.2.8"
-TITLE_LIMIT = 75
-HIGHLIGHT_LIMIT = 125
-HIGHLIGHT_IDEAL_MIN = 95
-HIGHLIGHT_IDEAL_MAX = 115
-HIGHLIGHT_SOFT_MIN = 95
-LEGACY_TITLE_LIMIT = 200
+APP_VERSION = "V17.11"
 
 LANGS = {
     "ES": {"name": "Español", "market": "Amazon.es", "native": "español"},
@@ -143,27 +137,7 @@ section[data-testid="stExpander"] { background:#0f172a!important; border:1px sol
 .status-table { width:100%; border-collapse:collapse; margin:8px 0 12px 0; }
 .status-table td,.status-table th { border-bottom:1px solid #334155; padding:7px 8px; color:#f8fafc; vertical-align:top; }
 .status-table th { color:#cbd5e1; font-weight:700; }
-
-.highlight-callout { background:#052e16; border:2px solid #22c55e; border-radius:12px; padding:10px 12px; margin:8px 0; font-size:15px; font-weight:900; color:#dcfce7!important; line-height:1.45; }
-.highlight-callout .label { color:#86efac!important; font-size:12px; letter-spacing:.02em; text-transform:uppercase; display:block; margin-bottom:4px; }
-.length-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:8px 0; }
-.length-card { border-radius:12px; padding:10px 12px; border:2px solid #334155; background:#0f172a; }
-.length-card.ok-len { border-color:#22c55e; background:#052e16; }
-.length-card.warn-len { border-color:#f59e0b; background:#3f2f05; }
-.length-card.bad-len { border-color:#ef4444; background:#3f1212; }
-.length-card .k { color:#cbd5e1!important; font-size:12px; font-weight:700; }
-.length-card .v { color:#f8fafc!important; font-size:22px; font-weight:900; line-height:1.1; }
-.length-card .hint { color:#e5e7eb!important; font-size:12px; margin-top:3px; }
-.export-warning { background:#451a1a; border:2px solid #ef4444; border-radius:12px; padding:10px 12px; margin:8px 0; color:#fee2e2!important; font-weight:800; }
-/* V18.2.8: force any accidental markdown/code/debug blocks to follow dark theme. */
-pre, code, .stMarkdown pre, .stMarkdown code, [data-testid="stCodeBlock"], [data-testid="stCodeBlock"] pre, [data-testid="stCodeBlock"] code { background:#0f172a!important; color:#f8fafc!important; border-color:#334155!important; }
-.stMarkdown pre, [data-testid="stCodeBlock"] pre { border:1px solid #334155!important; border-radius:10px!important; padding:8px 10px!important; white-space:pre-wrap!important; }
-textarea, input, div[contenteditable="true"] { background:#0f172a!important; color:#f8fafc!important; -webkit-text-fill-color:#f8fafc!important; }
-.safe-text { white-space:normal; word-break:break-word; }
 hr { border-color:#334155!important; }
-pre, code, kbd, samp { background:#0f172a!important; color:#f8fafc!important; border:1px solid #334155!important; border-radius:8px!important; white-space:pre-wrap!important; word-break:break-word!important; }
-.stCode, [data-testid="stCodeBlock"], [data-testid="stMarkdownContainer"] pre { background:#0f172a!important; color:#f8fafc!important; }
-textarea, input, [contenteditable="true"] { background:#0f172a!important; color:#f8fafc!important; -webkit-text-fill-color:#f8fafc!important; caret-color:#f8fafc!important; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -179,10 +153,6 @@ def init_state() -> None:
         "selected_es_title_zh": "",
         "confirmed_titles": {},
         "confirmed_title_zh": {},
-        "confirmed_highlights": {},
-        "confirmed_highlight_zh": {},
-        "confirmed_legacy_titles": {},
-        "item_highlights": {},
         "title_candidates": {},
         "title_history": {},
         "listings": {},
@@ -194,11 +164,6 @@ def init_state() -> None:
                 "es_cand_version": 0,
         "lang_cand_version": {},
         "newbie_auto_title": True,
-        "use_compressed_master": True,
-        "skip_existing_listings": True,
-        "generate_listing_zh": False,
-        "compressed_master_cache": "",
-        "compressed_master_signature": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -228,12 +193,12 @@ def reset_generated_state_if_product_changed() -> None:
         # Keep user input and API settings, clear generated artifacts that could contain old sockets/concepts.
         for key in [
             "fact_card", "es_title_candidates", "selected_es_title", "selected_es_title_zh",
-            "confirmed_titles", "confirmed_title_zh", "confirmed_highlights", "confirmed_highlight_zh", "confirmed_legacy_titles", "item_highlights", "title_candidates", "title_history", "listings",
+            "confirmed_titles", "confirmed_title_zh", "title_candidates", "title_history", "listings",
             "selected_es_title_zh_source", "lang_cand_version", "es_cand_version",
             "es_intent_include", "es_intent_exclude", "es_intent_demote", "es_intent_history",
         ]:
             if key in st.session_state:
-                if key in ["confirmed_titles", "confirmed_title_zh", "confirmed_highlights", "confirmed_highlight_zh", "confirmed_legacy_titles", "item_highlights", "title_candidates", "title_history", "listings", "fact_card", "lang_cand_version"]:
+                if key in ["confirmed_titles", "confirmed_title_zh", "title_candidates", "title_history", "listings", "fact_card", "lang_cand_version"]:
                     st.session_state[key] = {}
                 elif key == "es_intent_history":
                     st.session_state[key] = []
@@ -247,7 +212,7 @@ def reset_generated_state_if_product_changed() -> None:
                     st.session_state[key] = ""
         # Clear language current titles and edit versions.
         for k in list(st.session_state.keys()):
-            if k.startswith(("current_title::", "current_title_zh::", "current_title_zh_source::", "current_highlight::", "current_highlight_zh::", "current_legacy_title::", "highlight_edit::", "legacy_title_edit::", "title_edit_version::", "selected_candidate_idx::", "title_edit::")):
+            if k.startswith(("current_title::", "current_title_zh::", "current_title_zh_source::", "title_edit_version::", "selected_candidate_idx::", "title_edit::")):
                 del st.session_state[k]
         st.session_state["product_signature"] = sig
 
@@ -268,7 +233,7 @@ def _usage_tokens(resp: Any) -> Tuple[int, int]:
     return int(pick(usage, "input_tokens", "prompt_tokens") or 0), int(pick(usage, "output_tokens", "completion_tokens") or 0)
 
 
-def record_usage(label: str, model: str, resp: Any = None, input_hint: str = "", output_hint: str = "", image_count: int = 0, note: str = ""):
+def record_usage(label: str, model: str, resp: Any = None, input_hint: str = "", output_hint: str = "", image_count: int = 0):
     inp, out = _usage_tokens(resp) if resp is not None else (0, 0)
     estimated = False
     if not inp and not out:
@@ -278,18 +243,8 @@ def record_usage(label: str, model: str, resp: Any = None, input_hint: str = "",
     price = PRICE.get(model, PRICE.get("gpt-5.4"))
     cost = inp / 1_000_000 * price["input"] + out / 1_000_000 * price["output"]
     st.session_state.setdefault("api_usage_log", []).append({
-        "time": datetime.now().strftime("%H:%M:%S"),
         "label": label, "model": model, "input_tokens": inp, "output_tokens": out,
-        "total_tokens": inp + out, "cost": cost, "estimated": estimated, "image_count": image_count,
-        "note": note,
-    })
-
-
-def record_rule_step(label: str, note: str = "规则处理 / 跳过，无模型调用"):
-    st.session_state.setdefault("api_usage_log", []).append({
-        "time": datetime.now().strftime("%H:%M:%S"),
-        "label": label, "model": "RULE", "input_tokens": 0, "output_tokens": 0,
-        "total_tokens": 0, "cost": 0.0, "estimated": False, "image_count": 0, "note": note,
+        "cost": cost, "estimated": estimated, "image_count": image_count,
     })
 
 
@@ -418,61 +373,11 @@ def clean_text(s: str) -> str:
     return s.strip(" \n\t")
 
 
-def safe_html_text(s: Any) -> str:
-    """HTML-escape text and neutralize markdown code fences/backticks.
-    Streamlit markdown may render ``` inside unsafe HTML as a white code block;
-    this keeps candidate cards dark and prevents raw JSON/debug boxes.
-    """
-    return html.escape(str(s or "")).replace("`", "&#96;")
-
-
-def looks_like_raw_payload(s: Any) -> bool:
-    """Detect accidental raw JSON / code-fence content in zh/risk fields."""
-    t = str(s or "").strip()
-    if not t:
-        return False
-    low = t.lower()
-    if "```" in t or "risk_code" in low:
-        return True
-    if (t.startswith("{") or t.startswith("[")) and any(k in low for k in ['"title"', '"highlight"', 'item_highlight', 'legacy_title']):
-        return True
-    if any(k in low for k in ['{"title"', "{'title'", '"highlight"', "'highlight'", 'json array', 'json object']):
-        return True
-    return False
-
-
-def looks_like_poor_zh_note(txt: str) -> bool:
-    t = clean_text(txt)
-    if not t:
-        return True
-    if t in {"中文解释未生成", "暂无中文解释"}:
-        return True
-    # Very short comma-separated keyword fragments are not useful for new staff.
-    if len(t) < 12 and "、" in t:
-        return True
-    if t.count("、") >= 3 and not any(p in t for p in "。；：，适合采用带配备支持方便用于可"):
-        return True
-    # Avoid repeated obvious words like 开关、开关.
-    if re.search(r"(开关).{0,4}", t):
-        return True
-    return False
-
-
-def clean_display_zh(raw: Any, fallback_source: str = "") -> str:
-    """Use natural Chinese explanations. Poor keyword soup falls back to rule summary."""
-    if raw is None or looks_like_raw_payload(raw):
-        return rule_zh_for_text(fallback_source) if fallback_source else ""
-    txt = clean_text(str(raw))
-    if looks_like_raw_payload(txt) or len(txt) > 260 or looks_like_poor_zh_note(txt):
-        return rule_zh_for_text(fallback_source) if fallback_source else ""
-    return txt
-
-
 def has_cjk(s: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", str(s or "")))
 
 
-ES_STOPWORDS = {"de", "del", "la", "las", "el", "los", "un", "una", "unos", "unas", "y", "e", "o", "u", "para", "por", "con", "en", "a", "al", "sin", "sobre", "entre", "hasta", "desde"}
+ES_STOPWORDS = {"de", "del", "la", "las", "el", "los", "un", "una", "unos", "unas", "y", "o", "u", "para", "por", "con", "en", "a", "al", "sin", "sobre", "entre", "hasta", "desde"}
 PROTECTED_UPPER = {"LED", "USB", "CCT", "RGB", "IP20", "IP44", "IP54", "IP65", "E27", "E14", "G9", "GU10", "G45", "CRI"}
 
 
@@ -569,8 +474,6 @@ def normalize_title(title: str, lang: str = "") -> str:
     t = t.strip(" ,;-–—")
     if lang in {"ES", "FR", "IT", "PT"}:
         t = light_amazon_case(t, lang)
-    t = sanitize_unconfirmed_natural_wood_text(t, lang) if "sanitize_unconfirmed_natural_wood_text" in globals() else t
-    t = improve_title_naturalness(t, lang) if "improve_title_naturalness" in globals() else t
     return t.strip(" ,;-–—")
 
 def zh_translate_title(title: str, lang: str = "ES") -> str:
@@ -612,10 +515,6 @@ def uploaded_image_key(f: Any, idx: int) -> str:
 
 # ------------------------- prompt builders -------------------------
 def source_brief() -> str:
-    """Raw source bundle. V18.2 only uses this for the first fact-card pass and ES work.
-    Multi-language title generation and body generation must use compressed_master_text()
-    / body_context_text() instead, so old long copy is not sent repeatedly.
-    """
     return f"""
 SKU: {st.session_state.get('sku','')}
 EAN: {st.session_state.get('ean','')}
@@ -626,19 +525,6 @@ EAN: {st.session_state.get('ean','')}
 技术备注: {st.session_state.get('tech_notes','')}
 SEO关键词: {st.session_state.get('seo_keywords','')}
 手动长描述: {st.session_state.get('manual_description','')}
-""".strip()
-
-
-def source_brief_light() -> str:
-    """Small source supplement for ES only: no long old description."""
-    return f"""
-SKU: {st.session_state.get('sku','')}
-EAN: {st.session_state.get('ean','')}
-品牌: {st.session_state.get('brand','Alpinaluz')}
-系列名: {st.session_state.get('series','')}
-原始标题: {st.session_state.get('manual_title','')}
-技术备注: {st.session_state.get('tech_notes','')}
-SEO关键词: {st.session_state.get('seo_keywords','')}
 """.strip()
 
 
@@ -655,132 +541,6 @@ def fact_card_text() -> str:
             lines.append(f"{k}: {v}")
     return "\n".join(lines)
 
-
-def compact_fact_card_text() -> str:
-    """Only the confirmed/high-value facts used after the fact-card step."""
-    fc = st.session_state.get("fact_card", {}) or {}
-    priority = [
-        "product_type", "key_structure", "materials", "colors", "dimensions", "socket_or_led",
-        "bulb_included", "power", "cct_or_dimming", "adjustability", "power_connection",
-        "plug_cable", "switch_included", "switch_type", "indoor_outdoor", "style", "spaces",
-        "core_selling_points", "must_keep_in_titles", "do_not_claim", "notes_for_copy",
-    ]
-    lines = []
-    for k in priority:
-        v = fc.get(k, "")
-        if isinstance(v, list):
-            v = ", ".join(str(x) for x in v if str(x).strip())
-        v = clean_text(str(v or ""))
-        if v:
-            lines.append(f"{k}: {v[:600]}")
-    return "\n".join(lines)
-
-
-def compressed_master_signature() -> str:
-    raw = "||".join([
-        compact_fact_card_text(),
-        current_es_title() if "current_es_title" in globals() else "",
-        st.session_state.get("confirmed_highlights", {}).get("ES", ""),
-        st.session_state.get("confirmed_legacy_titles", {}).get("ES", ""),
-        st.session_state.get("es_intent_include", ""),
-        st.session_state.get("es_intent_exclude", ""),
-        st.session_state.get("es_intent_demote", ""),
-    ])
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()
-
-
-def compressed_master_text(refresh: bool = False) -> str:
-    """Rule-built compressed master for multilingual titles/highlights.
-    No raw old listing is included, which is the main V18.2 token reduction.
-    """
-    sig = compressed_master_signature()
-    if (not refresh) and st.session_state.get("compressed_master_signature") == sig and st.session_state.get("compressed_master_cache"):
-        return st.session_state["compressed_master_cache"]
-    cc = current_core_concepts() if "current_core_concepts" in globals() else {"A": [], "B": [], "C": []}
-    def names(tier):
-        return "、".join(x[1] for x in cc.get(tier, [])) or "无"
-    txt = f"""
-压缩母版（V18.2.8，多国语言只传这个，不再传完整旧文案）：
-品牌：{st.session_state.get('brand','Alpinaluz')}
-SKU/EAN：{st.session_state.get('sku','')} / {st.session_state.get('ean','')}
-ES已确认短标题：{current_es_title() if 'current_es_title' in globals() else st.session_state.get('selected_es_title','')}
-ES已确认商品亮点：{st.session_state.get('confirmed_highlights', {}).get('ES', st.session_state.get('current_highlight::ES',''))}
-ES传统标题参考：{st.session_state.get('confirmed_legacy_titles', {}).get('ES', st.session_state.get('current_legacy_title::ES',''))}
-
-确认事实卡：
-{compact_fact_card_text()}
-
-ES人工意图记录：
-{intent_ledger_text() if 'intent_ledger_text' in globals() else ''}
-
-标题信息预算：
-A级必须进短标题或亮点：{names('A')}
-B级尽量保留，可放商品亮点：{names('B')}
-C级降级到五点/描述：{names('C')}
-
-硬规则：
-- 禁止 halogen/halógena/halogène、incandescent/incandescente、Edison、traditional/tradicional、standard bulb。
-- 灯泡兼容只写 LED + 灯头 + 最大功率 + 灯泡不包含。
-- 不确认的信息不写。
-- 木材表达：Alpinaluz 默认不要过度纠结天然木；除非资料明确写 MDF、仿木、热转印木纹、wood effect、efecto madera、imitation wood 等，否则可按 wood/madera/bois/legno/madeira/Holz 正常表达。
-- 商品亮点建议写满95-115字符，不要只写70-80字符；优先承载材质、核心尺寸、调节、开关和场景；如果确认有开关，商品亮点必须出现本地化“开关/Schalter/switch/interrupteur”等表达。
-""".strip()
-    st.session_state["compressed_master_cache"] = txt
-    st.session_state["compressed_master_signature"] = sig
-    return txt
-
-
-def body_context_text(lang: str) -> str:
-    """Context for body generation. V18.2: no raw source_brief(), only confirmed facts and intent."""
-    es_listing = st.session_state.get("listings", {}).get("ES", {})
-    es_ref = ""
-    if lang != "ES" and isinstance(es_listing, dict) and es_listing:
-        es_ref = "\n".join([
-            "ES已生成正文参考（只保留卖点结构，不逐词翻译）：",
-            "五点：" + json.dumps(es_listing.get("bullets", []), ensure_ascii=False)[:1200],
-            "描述摘要：" + clean_text(str(es_listing.get("description", "")))[:900],
-            "Search Terms：" + clean_text(str(es_listing.get("search_terms", "")))[:250],
-        ])
-    return f"""
-确认事实卡：
-{compact_fact_card_text()}
-
-压缩母版：
-{compressed_master_text()}
-
-已确认短标题：{st.session_state.get('confirmed_titles', {}).get(lang, '')}
-已确认商品亮点：{st.session_state.get('confirmed_highlights', {}).get(lang, '')}
-传统长标题参考：{st.session_state.get('confirmed_legacy_titles', {}).get(lang, '')}
-
-ES人工意图记录：
-{intent_ledger_text() if 'intent_ledger_text' in globals() else ''}
-
-{es_ref}
-""".strip()
-
-
-def title_rules_compact(lang: str) -> str:
-    local = {
-        "ES": "西班牙语自然标题，重要名词可首字母大写。",
-        "FR": "法语自然表达，使用 applique murale/suspension 等本地词。",
-        "DE": "德语名词大写，复合词自然，不要夹外语。",
-        "IT": "意大利语自然表达，注意性数一致。",
-        "NL": "荷兰语自然表达，不要夹英语。",
-        "PL": "波兰语自然表达，不要夹英语/西语。",
-        "PT": "葡萄牙站自然表达，使用 candeeiro/aplique/casquilho。",
-        "SE": "瑞典语自然表达，不要夹英语。",
-        "EN": "英国英语自然 Title Case。",
-    }
-    return f"""
-- Alpinaluz 必须第一位。
-- 语言：{LANGS[lang]['native']}；站点：{LANGS[lang]['market']}。{local.get(lang, '')}
-- 短标题≤75字符：品牌 + 产品类型 + 1-2个最高价值规格。
-- 商品亮点≤125字符，目标95-115字符：用逗号短语补充材质、核心尺寸/底座、调节角度、开关、用途、IP、调光、插头线、上下出光等。
-- 传统标题≤200字符：仅参考，不作为主标题。
-- 不写中文/SKU；不写灯泡不含、安装简单等低价值售后词进短标题。
-- 单灯产品不要突出 1 foco / 1 luz / 1 light 等数量词；多灯产品保留数量。
-- 禁止卤素/白炽/Edison/traditional/standard bulb 等词。
-""".strip()
 
 
 # ------------------------- fact card Chinese helper -------------------------
@@ -836,273 +596,6 @@ FACT_TRANSLATION_MAP = [
     ("dormitorio", "卧室"), ("bedroom", "卧室"), ("chambre", "卧室"), ("camera", "卧室"), ("quarto", "卧室"), ("schlafzimmer", "卧室"), ("slaapkamer", "卧室"),
     ("nórdico", "北欧风"), ("nordic", "北欧风"), ("scandinav", "斯堪的纳维亚风"), ("skandinav", "斯堪的纳维亚风"), ("industrial", "工业风"), ("minimal", "极简风"),
 ]
-
-
-NATURAL_WOOD_TERMS = [
-    "madera natural", "natural wood", "bois naturel", "legno naturale", "madeira natural", "naturholz",
-    "naturalne drewno", "natuurlijk hout", "naturträ", "naturtra", "天然木", "原木", "实木", "madera maciza", "solid wood"
-]
-
-WOOD_GENERIC_TERMS = ["madera", "wood", "bois", "legno", "madeira", "holz", "hout", "drewno", "trä", "tra", "木"]
-
-
-def natural_wood_confirmed() -> bool:
-    """Strict confirmation only from human-provided fields.
-    Important: AI-generated fact card text is NOT accepted as confirmation, because it may infer
-    "natural wood" from old copy. To allow natural wood wording, the operator must write an explicit
-    confirmation in 技术备注 / 手动标题 / 手动长描述, for example:
-    天然木确认 / 原木确认 / natural wood confirmed / madera natural confirmada.
-    """
-    blob = " ".join([
-        str(st.session_state.get("tech_notes", "")),
-        str(st.session_state.get("manual_title", "")),
-        str(st.session_state.get("manual_description", "")),
-    ]).lower()
-    explicit_patterns = [
-        r"(?:天然木|原木|实木).{0,12}(?:确认|已确认|confirm)",
-        r"(?:确认|已确认|confirm).{0,12}(?:天然木|原木|实木)",
-        r"(?:natural wood|solid wood).{0,18}(?:confirmed|confirmado|confirmada|confermat|confirmé|confirme|bestätigt|bevestigd|potwierd)",
-        r"(?:confirmed|confirmado|confirmada|confermat|confirmé|confirme|bestätigt|bevestigd|potwierd).{0,18}(?:natural wood|solid wood)",
-        r"madera natural.{0,18}(?:confirmada|confirmado)",
-        r"(?:confirmada|confirmado).{0,18}madera natural",
-        r"bois naturel.{0,18}(?:confirmé|confirme)",
-        r"legno naturale.{0,18}(?:confermato|confermata)",
-        r"madeira natural.{0,18}(?:confirmada|confirmado)",
-        r"naturholz.{0,18}(?:bestätigt|bestaetigt)",
-        r"naturalne drewno.{0,18}(?:potwierdzone|potwierdzono)",
-        r"natuurlijk hout.{0,18}(?:bevestigd)",
-        r"naturträ.{0,18}(?:bekräftat|bekraftat|bekräftad|bekraftad)",
-    ]
-    return any(re.search(pat, blob, flags=re.I) for pat in explicit_patterns)
-
-def product_has_wood_reference() -> bool:
-    fc = st.session_state.get("fact_card", {}) or {}
-    blob = " ".join([
-        str(fc.get("materials", "")), str(fc.get("colors", "")), str(fc.get("key_structure", "")),
-        str(fc.get("core_selling_points", "")), str(fc.get("must_keep_in_titles", "")), str(fc.get("notes_for_copy", "")),
-        str(st.session_state.get("tech_notes", "")), str(st.session_state.get("manual_title", "")),
-    ]).lower()
-    return any(term.lower() in blob for term in WOOD_GENERIC_TERMS + NATURAL_WOOD_TERMS)
-
-def wood_effect_or_mdf_confirmed() -> bool:
-    """Only downgrade wood wording when the input explicitly says MDF / imitation / wood-effect / thermal-transfer etc.
-    For Alpinaluz, ordinary wood wording should not be over-policed.
-    """
-    fc = st.session_state.get("fact_card", {}) or {}
-    blob = " ".join([
-        str(fc.get("materials", "")), str(fc.get("colors", "")), str(fc.get("key_structure", "")),
-        str(fc.get("core_selling_points", "")), str(fc.get("must_keep_in_titles", "")), str(fc.get("notes_for_copy", "")),
-        str(st.session_state.get("tech_notes", "")), str(st.session_state.get("manual_title", "")),
-        str(st.session_state.get("manual_description", "")),
-    ]).lower()
-    terms = [
-        "mdf", "wood effect", "wood-effect", "imitation wood", "faux wood", "madera efecto", "efecto madera",
-        "imitación madera", "imitacion madera", "bois effet", "effet bois", "holzoptik", "effetto legno",
-        "efeito madeira", "houtlook", "efekt drewna", "trälook", "traelook", "热转印", "热转印木纹", "仿木", "木纹效果", "贴皮"
-    ]
-    return any(t in blob for t in terms)
-
-
-def sanitize_unconfirmed_natural_wood_text(text: str, lang: str = "") -> str:
-    """Hard post-process: never upgrade generic wood to natural/solid wood unless explicitly confirmed."""
-    if not text:
-        return ""
-    t = str(text)
-    if natural_wood_confirmed() or not wood_effect_or_mdf_confirmed():
-        return clean_text(t)
-
-    # Only when MDF/wood-effect/imitation is explicitly confirmed, downgrade natural wood wording.
-    # Phrase-level replacements first. Keep a usable local expression such as "wood front" / "façade bois".
-    replacements = [
-        # ES
-        (r"\bfrontal\s+de\s+madera\s+natural\b", "frontal de madera"),
-        (r"\bmadera\s+natural\b", "madera"),
-        # EN
-        (r"\bfront\s+panel\s+in\s+natural\s+wood\b", "wood front panel"),
-        (r"\bnatural\s+wood\s+front\s+panel\b", "wood front panel"),
-        (r"\bnatural\s+wood\s+front\b", "wood front"),
-        (r"\bwith\s+natural\s+wood\b", "with wood front"),
-        (r"\bnatural\s+wood\b", "wood"),
-        # FR
-        (r"\bfa[cç]ade\s+en\s+bois\s+naturel\b", "façade bois"),
-        (r"\bfront\s+en\s+bois\s+naturel\b", "front en bois"),
-        (r"\bavec\s+bois\s+naturel\b", "avec bois"),
-        (r"\bbois\s+naturel\b", "bois"),
-        # IT
-        (r"\bfrontale\s+in\s+legno\s+naturale\b", "frontale in legno"),
-        (r"\bcon\s+legno\s+naturale\b", "con legno"),
-        (r"\blegno\s+naturale\b", "legno"),
-        # PT
-        (r"\bfrente\s+em\s+madeira\s+natural\b", "frente em madeira"),
-        (r"\bcom\s+madeira\s+natural\b", "com madeira"),
-        (r"\bmadeira\s+natural\b", "madeira"),
-        # DE
-        (r"\bFront\s+aus\s+Naturholz\b", "Holzfront"),
-        (r"\bmit\s+Naturholz\b", "mit Holzfront"),
-        (r"\bNaturholzfront\b", "Holzfront"),
-        (r"\bNaturholz\b", "Holz"),
-        # PL
-        (r"\bfrontem\s+z\s+naturalnego\s+drewna\b", "drewnianym frontem"),
-        (r"\bz\s+naturalnym\s+drewnem\b", "z drewnianym frontem"),
-        (r"\bnaturalne\s+drewno\b", "drewno"),
-        (r"\bnaturalnego\s+drewna\b", "drewna"),
-        (r"\bnaturalnym\s+drewnem\b", "drewnianym frontem"),
-        # NL
-        (r"\bfront\s+van\s+natuurlijk\s+hout\b", "houtfront"),
-        (r"\bmet\s+natuurlijk\s+hout\b", "met houtfront"),
-        (r"\bnatuurlijk\s+hout\b", "hout"),
-        # SE
-        (r"\bfront\s+i\s+naturtr[äa]\b", "träfront"),
-        (r"\bmed\s+naturtr[äa]\b", "med träfront"),
-        (r"\bnaturtr[äa]\b", "trä"),
-    ]
-    for pat, repl in replacements:
-        t = re.sub(pat, repl, t, flags=re.I)
-    # Additional broad cleanups for comma-separated Amazon titles and marketplace copy.
-    broad = [
-        (r"\bNatural\s+Wood\b", "wood front"),
-        (r"\bMadera\s+Natural\b", "madera"),
-        (r"\bBois\s+Naturel\b", "bois"),
-        (r"\bLegno\s+Naturale\b", "legno"),
-        (r"\bMadeira\s+Natural\b", "madeira"),
-        (r"\bNaturholz\b", "Holzfront"),
-        (r"\bNatuurlijk\s+Hout\b", "houtfront"),
-        (r"\bNaturalne\s+Drewno\b", "drewniany front"),
-        (r"\bnaturalnym\s+drewnem\b", "drewnianym frontem"),
-        (r"\bNaturtr[äa]\b", "träfront"),
-    ]
-    for pat, repl in broad:
-        t = re.sub(pat, repl, t, flags=re.I)
-    return clean_text(t)
-
-def improve_title_naturalness(title: str, lang: str = "") -> str:
-    """Deterministic fixes for titles that look like keyword piles or repeat prepositions."""
-    t = clean_text(title)
-    if not t:
-        return t
-    if lang == "EN":
-        t = re.sub(r"\bWhite\s+Wood\s+Adjustable\s+With\s+Switch\b", "White with Wood Front and Switch", t, flags=re.I)
-        t = re.sub(r"\bWhite\s+Natural\s+Wood\s+Adjustable\s+With\s+Switch\b", "White with Wood Front and Switch", t, flags=re.I)
-        t = re.sub(r"\bWhite\s+with\s+Wood\s+and\s+Switch\b", "White with Wood Front and Switch", t, flags=re.I)
-        t = re.sub(r"\bWhite\s+with\s+Wood\s+Front\s+and\s+Switch\b", "White with Wood Front and Switch", t, flags=re.I)
-        t = re.sub(r"\bWith\b", "with", t)
-    elif lang == "FR":
-        t = re.sub(r"\bBlanche\s+Bois(?:\s+Naturel)?\s+Orientable\s+Interrupteur\b", "Blanche Orientable avec Bois et Interrupteur", t, flags=re.I)
-        t = re.sub(r"\bOrientable\s+Interrupteur\b", "Orientable avec Interrupteur", t, flags=re.I)
-        t = re.sub(r"\bBlanche\s+Bois\b", "Blanche avec Bois", t, flags=re.I)
-        t = re.sub(r"\bavec\s+Bois\s+avec\s+Interrupteur\b", "avec Bois et Interrupteur", t, flags=re.I)
-        t = re.sub(r"\bavec\s+Fa[cç]ade\s+Bois\s+avec\s+Interrupteur\b", "avec Façade Bois et Interrupteur", t, flags=re.I)
-    elif lang == "IT":
-        t = re.sub(r"\bBianca\s+Legno(?:\s+Naturale)?\s+con\s+Interruttore\b", "Bianca con Legno e Interruttore", t, flags=re.I)
-        t = re.sub(r"\bBianca\s+Legno\b", "Bianca con Legno", t, flags=re.I)
-        t = re.sub(r"\bcon\s+Legno\s+con\s+Interruttore\b", "con Legno e Interruttore", t, flags=re.I)
-    elif lang == "PT":
-        t = re.sub(r"\bBranco\s+Madeira(?:\s+Natural)?\s+Orientável\s+com\s+Interruptor\b", "Branco com Madeira Orientável e Interruptor", t, flags=re.I)
-        t = re.sub(r"\bBranco\s+Madeira\b", "Branco com Madeira", t, flags=re.I)
-        t = re.sub(r"\bcom\s+Madeira\s+com\s+Interruptor\b", "com Madeira e Interruptor", t, flags=re.I)
-    elif lang == "PL":
-        t = re.sub(r"\bBiały\s+Naturalne\s+Drewno\s+Regulowany\s+z\s+Włącznikiem\b", "Biały z Drewnianym Frontem i Włącznikiem", t, flags=re.I)
-        t = re.sub(r"\bBiały\s+Drewno\s+Regulowany\s+z\s+Włącznikiem\b", "Biały z Drewnianym Frontem i Włącznikiem", t, flags=re.I)
-        t = re.sub(r"\bBiały\s+Naturalne\s+Drewno\b", "Biały z Drewnianym Frontem", t, flags=re.I)
-        t = re.sub(r"\bbiały\s+z\s+drewno\b", "biały z drewnianym frontem", t, flags=re.I)
-    elif lang == "NL":
-        t = re.sub(r"\bWit\s+Natuurlijk\s+Hout\s+Verstelbaar\s+met\s+Schakelaar\b", "Wit met Houtfront en Schakelaar", t, flags=re.I)
-        t = re.sub(r"\bWit\s+Hout\s+Verstelbaar\s+met\s+Schakelaar\b", "Wit met Houtfront en Schakelaar", t, flags=re.I)
-        t = re.sub(r"\bWit\s+met\s+Hout\s+en\s+Schakelaar\b", "Wit met Houtfront en Schakelaar", t, flags=re.I)
-    elif lang == "DE":
-        t = re.sub(r"\bWeiß\s+Naturholz\s+schwenkbar\s+mit\s+Schalter\b", "Weiß mit Holzfront und Schalter", t, flags=re.I)
-        t = re.sub(r"\bWeiß\s+Holz\s+schwenkbar\s+mit\s+Schalter\b", "Weiß mit Holzfront und Schalter", t, flags=re.I)
-        t = re.sub(r"\bWeiß\s+mit\s+Holz\s+und\s+Schalter\b", "Weiß mit Holzfront und Schalter", t, flags=re.I)
-    elif lang == "ES":
-        t = re.sub(r"\bMadera\s+e\s+Interruptor\b", "Madera e Interruptor", t)
-    # Generic cleanup for duplicate connector patterns created by sanitization.
-    t = re.sub(r"\bavec\s+([^,]{2,45}?)\s+avec\s+", r"avec \1 et ", t, flags=re.I)
-    t = re.sub(r"\bcom\s+([^,]{2,45}?)\s+com\s+", r"com \1 e ", t, flags=re.I)
-    # Make comma-pile titles more natural and remove repeated feature words.
-    t = re.sub(r",\s*(?:Wood Front|wood front)\s*,", ", wood front,", t, flags=re.I)
-    if lang == "EN":
-        t = re.sub(r"White,\s*wood front,\s*with Switch", "White with wood front and switch", t, flags=re.I)
-        t = re.sub(r"White\s+with\s+wood front\s+and\s+Switch", "White with Wood Front and Switch", t, flags=re.I)
-    elif lang == "ES":
-        t = re.sub(r"con\s+Madera\s+Orientable\s+e\s+Interruptor", "con Frontal de Madera e Interruptor", t, flags=re.I)
-        t = re.sub(r",\s*Madera,", ", Frontal de Madera,", t, flags=re.I)
-    elif lang == "FR":
-        t = re.sub(r"Blanche,\s*Bois,\s*350", "Blanche avec Bois, 350", t, flags=re.I)
-        t = re.sub(r"Blanche\s+avec\s+Bois\s+et\s+Interrupteur", "Blanche avec Bois et Interrupteur", t, flags=re.I)
-    elif lang == "PT":
-        t = re.sub(r"Branco,\s*Madeira,", "Branco com Madeira,", t, flags=re.I)
-        t = re.sub(r"com\s+Madeira\s+e\s+Interruptor", "com Madeira e Interruptor", t, flags=re.I)
-    elif lang == "DE":
-        t = re.sub(r"Weiß,\s*Holzfront,\s*Schalter", "Weiß mit Holzfront und Schalter", t, flags=re.I)
-    elif lang == "PL":
-        t = re.sub(r"biały,\s*drewniany front,\s*włącznik", "biały z drewnianym frontem i włącznikiem", t, flags=re.I)
-    elif lang == "NL":
-        t = re.sub(r"Wit,\s*houtfront,\s*schakelaar", "Wit met houtfront en schakelaar", t, flags=re.I)
-    elif lang == "SE":
-        t = re.sub(r"vit,\s*träfront,\s*strömbrytare", "vit med träfront och strömbrytare", t, flags=re.I)
-    t = re.sub(r"\s*,\s*,+", ", ", t)
-    return clean_text(t)
-
-def rule_zh_for_text(text: str, fallback: str = "") -> str:
-    """Free, natural Chinese hint for candidate cards and省token导出. No GPT call.
-    The goal is a short sentence, not a debug keyword list.
-    """
-    src = clean_text(text)
-    if not src:
-        return fallback or "中文解释未生成"
-    low = src.lower()
-    product = ""
-    if any(x in low for x in ["wall light", "wall lamp", "applique", "wandlamp", "wandleuchte", "kinkiet", "vägglampa", "vagglampa", "aplique"]):
-        product = "壁灯"
-    elif any(x in low for x in ["pendant", "suspension", "colgante", "pendelleuchte"]):
-        product = "吊灯"
-    elif any(x in low for x in ["floor lamp", "lámpara de pie", "stehlampe"]):
-        product = "落地灯"
-    specs = []
-    for tok in ["GU10", "E27", "G9", "E14", "LED"]:
-        if tok.lower() in low:
-            specs.append(tok); break
-    if any(x in low for x in ["white", "blanco", "blanche", "bianca", "branco", "weiß", "weiss", "wit", "biały", "bialy", "vit"]):
-        specs.append("白色")
-    if any(x in low for x in ["wood front", "frontal de madera", "façade bois", "facade bois", "frontale in legno", "frente em madeira", "holzfront", "drewnianym frontem", "houtfront", "träfront", "madera", "wood", "bois", "legno", "madeira", "holz", "drewno", "hout", "trä"]):
-        specs.append("木质前板")
-    material = []
-    if any(x in low for x in ["steel", "acero", "acier", "acciaio", "aço", "aco", "stahl", "stal", "stål", "staal"]):
-        material.append("钢")
-    if any(x in low for x in ["aluminium", "aluminio", "alumínio", "alumin"]):
-        material.append("铝")
-    features = []
-    if "350" in low:
-        features.append("灯头约350°可调")
-    if any(x in low for x in ["switch", "interrup", "schalter", "włącz", "wlacz", "schakel", "strömbryt", "strombryt"]):
-        features.append("带开关")
-    dims = []
-    for m in re.findall(r"Ø?\d+(?:[,.]\d+)?\s*(?:x|×)\s*Ø?\d+(?:[,.]\d+)?\s*cm|Ø\s*\d+(?:[,.]\d+)?\s*cm", src, flags=re.I):
-        d = clean_text(m)
-        if d and d not in dims:
-            dims.append(d)
-    scenes = []
-    if any(x in low for x in ["bed", "bedside", "cabecero", "chevet", "testiera", "cabeceira", "bett", "łóż", "lozko", "säng", "sang"]): scenes.append("床头")
-    if any(x in low for x in ["reading", "lectura", "lecture", "lettura", "leitura", "lesen", "lezen", "czyt", "läs", "las"]): scenes.append("阅读")
-    if any(x in low for x in ["living", "salón", "salon", "soggiorno", "sala", "wohnzimmer", "woonkamer", "vardagsrum", "sofa"]): scenes.append("客厅/沙发旁")
-    bits=[]
-    if product:
-        bits.append(product)
-    if specs:
-        bits.append("、".join(dict.fromkeys(specs)))
-    if material:
-        bits.append("材质含"+"、".join(dict.fromkeys(material)))
-    if features:
-        bits.append("，".join(dict.fromkeys(features)))
-    if dims:
-        bits.append("尺寸约"+"、".join(dims[:2]))
-    if scenes:
-        bits.append("适合"+"、".join(dict.fromkeys(scenes)))
-    if not bits:
-        return fallback or "中文解释未生成"
-    sentence = "，".join(bits)
-    sentence = re.sub(r"，+", "，", sentence).strip("，")
-    return sentence + "。"
 
 def fact_value_zh_hint(value: Any) -> str:
     text = clean_text(", ".join(str(x) for x in value) if isinstance(value, list) else str(value or ""))
@@ -1201,13 +694,9 @@ def title_rules(lang: str) -> str:
 - 单灯/单头产品：标题不要突出 1 foco / 1 luz / 1 spot / 1 light / 1-flammig / 1 luce 等数量词，除非用户明确要求；直接写 wall light / aplique / Wandleuchte + 灯头即可。
 - 多灯/多头产品：2灯以上必须保留数量，例如 3 luces / 3 lights / 3-flammig / 3x E27。
 - 如果 ES 最终标题中已经人工删除某个低价值词，多国语言不要把它重新加回来。
-- V18 新规模式：短标题必须控制在 75 字符以内（含空格），理想目标 68-72 字符，避免卡到 75/75。
-- 短标题只放：品牌 + 产品类型 + 1-2 个最高价值规格/属性。不要为了SEO把所有词塞进标题。
-- 商品亮点 Item Highlights 必须控制在 125 字符以内，目标 95-115 字符；用逗号短语补充材质、核心尺寸/底座、调节角度、开关、用途、IP、防水/遮蔽户外、插头线等标题放不下的信息。
-- 传统长标题也要生成一个 200 字符以内版本，仅作历史兼容参考，不作为新规主标题。
-- 如果信息太多，按 A/B/C 三级取舍：A级进短标题；B级进商品亮点；C级放到五点/描述。
-- 短标题和商品亮点尽量不要重复同一个关键词；同一事实不要机械重复，商品亮点要优先补足“材质 + 关键尺寸/结构 + 功能 + 使用场景”。
-- 短标题不能为了压缩删除必要介词或连接词，必须保持本地语言自然语法，尤其是 FR/IT/PT/PL/NL/DE。
+- 宁可略短自然，也不要为了凑字数堆词。
+- 标题长度建议 140-200 字符，特殊语言可自然略短，但不能缺失A级核心信息。
+- 如果信息太多，按 A/B/C 三级取舍：A级必须进标题；B级保留1-2个最重要；C级放到五点/描述，不要塞标题。
 """
     local = {
         "ES": "西班牙语标题可用 Amazon 西班牙风格：重要名词首字母可大写，介词自然小写。",
@@ -1235,12 +724,12 @@ def es_title_prompt(instruction: str = "") -> str:
 产品事实卡：
 {fact_card_text()}
 
-ES轻量资料补充（只限ES阶段使用）：
-{source_brief_light()}
+原始资料：
+{source_brief()}
 
-输出 JSON 数组，每个元素只保留这些字段，避免浪费 output token：
-{{"title":"75字符以内西班牙短标题", "zh":"标题中文审核说明：简洁但完整，说明产品类型、关键规格/材质/灯头/风险点", "highlight":"95-115字符最佳、125字符以内商品亮点", "highlight_zh":"商品亮点中文审核说明：说明亮点主打什么、包含哪些关键参数、是否漏核心卖点", "risk_code":"ok / too_long / grammar_check / missing_core / material_risk"}}
-必须输出 zh 和 highlight_zh。中文解释要精简但完整，不强制字数，不要关键词堆叠，不要重复词，不要漏产品类型/材质/灯头/尺寸/风险判断等关键审核点。只输出 JSON。
+输出 JSON 数组，每个元素：
+{{"title":"西班牙标题", "zh":"标题中文快译", "why":"简短说明保留了哪些核心信息", "risk":"标题风险/缺点/注意点；若无明显风险写无明显风险"}}
+只输出 JSON。
 """
 
 
@@ -1248,57 +737,65 @@ def lang_title_prompt(lang: str, instruction: str = "") -> str:
     es_title = st.session_state.get("confirmed_titles", {}).get("ES", "") or st.session_state.get("selected_es_title", "")
     return f"""请为 {LANGS[lang]['market']} 生成 3 个本地语言标题候选，语言必须是 {LANGS[lang]['native']}。
 
-V18.2.8压缩输入模式：只使用压缩母版 + ES人工意图 + 事实卡，不再重复传完整旧文案。
+这是逐国语言标题确认，不是机器翻译，也不是碎词拼接。请参考最终 ES 标题的含义，但要按该国 Amazon 搜索习惯重写。
 
-本国语言规则：
-{title_rules_compact(lang)}
+{title_rules(lang)}
 
-标题信息预算和继承：
+非常重要：必须尊重 ES 标题核心信息，但不能机械照搬导致超长。请按照下面的标题信息预算和 A/B/C 取舍生成：
 {title_budget_text()}
 {must_inherit_text_for_prompt()}
+
+{intent_prompt_text()}
 
 用户本轮中文修改要求：{instruction or '首次生成，请给出3个高质量本地标题'}
 
 最终 ES 标题：
 {es_title}
 
-压缩母版：
-{compressed_master_text()}
+产品事实卡：
+{fact_card_text()}
 
-输出 JSON 数组，每个元素只保留这些字段，避免浪费 output token：
-{{"title":"75字符以内{LANGS[lang]['native']}短标题", "zh":"标题中文审核说明：简洁但完整，说明产品类型、关键规格/材质/灯头/风险点", "highlight":"95-115字符最佳、125字符以内商品亮点", "highlight_zh":"商品亮点中文审核说明：说明亮点主打什么、包含哪些关键参数、是否漏核心卖点", "risk_code":"ok / too_long / grammar_check / missing_core / material_risk"}}
-必须输出 zh 和 highlight_zh。中文解释要精简但完整，不强制字数，不要关键词堆叠，不要重复词，不要漏产品类型/材质/灯头/尺寸/风险判断等关键审核点。只输出 JSON。
+原始资料补充：
+{source_brief()}
+
+输出 JSON 数组，每个元素：
+{{"title":"{LANGS[lang]['native']}标题", "zh":"标题中文快译", "kept":"简短说明保留了哪些ES核心信息", "risk":"标题风险/缺点/注意点；若无明显风险写无明显风险"}}
+只输出 JSON。
 """
+
 
 
 def batch_lang_title_prompt(langs: List[str]) -> str:
     es_title = st.session_state.get("confirmed_titles", {}).get("ES", "") or st.session_state.get("selected_es_title", "")
-    lang_rules = "\n".join([f"{l}: {title_rules_compact(l)}" for l in langs])
-    schema = {l: [{"title": f"75字符以内{LANGS[l]['native']}短标题", "zh": "标题中文审核说明，精简但完整", "highlight": "95-115字符最佳、125字符以内商品亮点", "highlight_zh": "商品亮点中文审核说明，精简但完整", "risk_code": "ok / too_long / grammar_check / missing_core / material_risk"}] for l in langs}
+    lang_rules = "\n".join([f"{l}: {LANGS[l]['market']}，必须使用 {LANGS[l]['native']}。{title_rules(l)}" for l in langs])
+    schema = {l: [{"title": f"{LANGS[l]['native']}标题1", "zh": "中文快译", "kept": "保留的核心信息", "risk": "风险或无"}] for l in langs}
     return f"""请为多个 Amazon 国家站一次性生成首轮标题候选。每个国家生成 3 个标题候选。
 
-V18.2.8压缩输入模式：本步骤只允许使用压缩母版，不再读取完整旧文案。请本地化重写，不要机器直译。
+这是给新手节省等待时间的“首轮批量候选”，不是最终正文。请保证每个国家标题独立本地化，不能碎词拼接，不能简单机器翻译。
 
 通用要求：
+- Alpinaluz 必须第一位。
 - 每个国家必须使用对应本地语言。
-- 标题必须继承 ES 已确认意图，但短标题不能超过75字符。
-- 每个候选必须输出 zh 和 highlight_zh；中文说明要精简但完整，方便新手截图给主管看，不能只写几个关键词。
-- 商品亮点≤125字符，目标95-115字符；补足标题放不下的信息，优先材质、核心尺寸/底座、调节角度、开关和使用场景，避免和标题机械重复。
-- 传统长标题≤200字符，仅作历史兼容参考。
+- 标题必须尽量保留 ES 标题的核心成交信息，但不能机械照搬导致超长。
+- 标题信息预算：{title_budget_text()}
+- A/B/C取舍：{must_inherit_text_for_prompt()}
+- ES人工意图记录：{intent_prompt_text()}
+- 不要写中文，不要写 SKU，不要无具体数字的裸 cm；但 75 cm、Ø20 cm、43 x 5,1 x 2,7 cm 这类前面有数字的写法是允许的。
+- 不要把“灯泡不含/安装简单/配件包含”等低价值说明塞进标题。
 - 灯泡安全：禁止 halogen/卤素、incandescent/白炽、Edison、traditional/tradicional、standard bulb 等词。
+- 每个标题都给一个短中文快译，方便不会外语的同事判断。
 
-标题预算：
-{title_budget_text()}
-{must_inherit_text_for_prompt()}
-
-各国本地化规则：
+各国规则：
 {lang_rules}
 
 最终 ES 标题：
 {es_title}
 
-压缩母版：
-{compressed_master_text()}
+产品事实卡：
+{fact_card_text()}
+
+原始资料补充：
+{source_brief()}
 
 输出严格 JSON 对象，key 必须是语言代码。示例结构：
 {json.dumps(schema, ensure_ascii=False)}
@@ -1307,43 +804,54 @@ V18.2.8压缩输入模式：本步骤只允许使用压缩母版，不再读取�
 
 def listing_prompt(lang: str, include_aplus: bool = True) -> str:
     title = st.session_state.get("confirmed_titles", {}).get(lang, "")
+    es_listing = st.session_state.get("listings", {}).get("ES", {})
+    es_bullets = es_listing.get("bullets", []) if isinstance(es_listing, dict) else []
+    es_description = es_listing.get("description", "") if isinstance(es_listing, dict) else ""
+    es_search = es_listing.get("search_terms", "") if isinstance(es_listing, dict) else ""
     return f"""请生成 {LANGS[lang]['market']} Listing 正文，语言必须是 {LANGS[lang]['native']}。
 
-V18.2.8正文模式：只使用确认后的事实卡、压缩母版、ES人工意图和已确认标题/亮点，不再重复传原始旧文案。
-
 关键规则：
-- Title 必须完全使用我提供的“已确认短标题”，不得修改、不得缩短、不得重写。
-- Item Highlights 必须完全使用我提供的“已确认商品亮点”，不得修改、不得重写。
-- 生成完整包：短标题、商品亮点、传统长标题参考、五点、长描述、Search Terms、A+。必须生成完整自然中文解释，方便新手审核；不要输出关键词堆叠。A+ 必须生成5个模块。
+- Title 必须完全使用我提供的“已确认标题”，不得修改、不得缩短、不得重写。
+- 生成完整包：五点、长描述、Search Terms、A+ 和所有中文解释。A+ 必须生成5个模块。
+- 如果已有 ES 五点/描述，请逐条保留同样卖点方向，避免负优化。
 - 不要新增不存在功能。灯头/是否含灯泡/尺寸/功率必须准确。
 - 灯泡表述采用平台安全模板：只写“兼容对应灯头的 LED 灯泡，最大功率 XW，灯泡不包含”。
-- 全文绝对禁止出现 halogen/halógena/halogène/卤素、incandescent/incandescente/白炽、Edison、traditional/tradicional、standard bulb 等高风险灯泡词。
+- 全文绝对禁止出现 halogen/halógena/halogène/卤素、incandescent/incandescente/白炽、Edison、traditional/tradicional、standard bulb 等高风险灯泡词。即使旧文案有，也必须清理掉。
 - 未确认的信息不要写；不要自动写 no tiene/no incluye/no es 等负面清单，除非灯泡不包含、IP/室内限制或人工明确要求。
-- 木材表达：不要过度降级。除非事实卡/人工资料明确写 MDF、仿木、热转印木纹、wood effect、efecto madera、imitation wood、wood-effect 等，否则可按木质/天然木常规表达；若明确是仿木/木纹效果，才写 wood effect / efecto madera / Holzoptik。
-- 五点格式要像 Amazon 最常见的自然格式："自然卖点短标题: 具体说明"。
-- 五点顺序必须按产品类型固定，不要自由乱排：
-  * 吊灯/吸顶吊灯/pendant/suspension/pendelleuchte：1设计风格/主视觉卖点；2材质工艺/灯罩质感；3尺寸/组合安装/高度调节；4灯头兼容/功率/灯泡不含；5使用场景/安装方式/IP。
-  * 壁灯/aplique/wall light：1设计风格/主视觉卖点；2功能结构（开关、插头、可调角度、旋转）；3材质和尺寸；4灯头兼容/功率/灯泡不含；5使用场景/安装方式/室内外。
-  * 吸顶灯/LED灯：1光效/外观；2功率/流明/色温；3材质/尺寸；4安装方式/适用空间；5IP/安全/注意事项。
-- 中文解释不是逐字翻译，而是“审核说明”：精简但完整，不强制字数；必须说明这条标题/亮点/五点在讲什么、是否覆盖关键事实、有没有明显平台风险。
+- 五点格式要像 Amazon 最常见的自然格式："自然卖点短标题: 具体说明"，短标题可 3-8 个词，不要硬凑两个词。
+- 标题短语不能碎裂，语法要像本地人写的电商文案。
 
-正文生成上下文：
-{body_context_text(lang)}
+已确认标题（必须原样输出）：
+{title}
+
+产品事实卡：
+{fact_card_text()}
+
+ES人工意图记录：
+{intent_prompt_text()}
+
+ES 参考五点：
+{json.dumps(es_bullets, ensure_ascii=False)}
+
+ES 参考长描述：
+{es_description}
+
+ES Search Terms：
+{es_search}
+
+原始资料：
+{source_brief()}
 
 输出 JSON：
 {{
-  "title": "必须原样等于已确认短标题",
-  "title_zh": "短标题中文审核说明，精简但完整，说明产品类型、关键规格、材质/外观、灯头/功能和风险判断",
-  "item_highlights": "必须原样等于已确认商品亮点",
-  "item_highlights_zh": "商品亮点中文审核说明，说明主打卖点、包含参数和是否漏核心信息",
-  "legacy_title": "传统200字符以内标题参考",
-  "legacy_title_zh": "传统标题自然中文解释",
+  "title": "必须原样等于已确认标题",
+  "title_zh": "中文快译",
   "bullets": ["5条"],
-  "bullets_zh": ["对应5条五点的中文审核说明，必须5条；每条说明该卖点主打什么，不要只做短翻译"],
+  "bullets_zh": ["5条中文解释"],
   "description": "长描述",
-  "description_zh": "长描述中文审核摘要，精简说明产品定位、关键参数、场景和风险点",
+  "description_zh": "中文解释",
   "search_terms": "250字符以内，不重复品牌，不加标点堆砌",
-  "search_terms_zh": "搜索词中文解释",
+  "search_terms_zh": "中文解释",
   "aplus": [{{"module":1,"title":"","body":"","image_prompt_zh":""}}]
 }}
 A+要求：必须生成5个模块；每个模块包含标题、正文、中文配图提示。
@@ -1351,30 +859,24 @@ A+要求：必须生成5个模块；每个模块包含标题、正文、中文�
 """
 
 # ------------------------- candidates and listings -------------------------
-
 def parse_candidate_payload(data: Any, lang: str = "") -> List[Dict[str, str]]:
     if isinstance(data, dict):
         data = data.get("candidates") or data.get("titles") or data.get("items") or []
     out = []
     for item in data if isinstance(data, list) else []:
         if isinstance(item, str):
-            _t = normalize_title(item, lang); out.append({"title": _t, "zh": rule_zh_for_text(_t), "highlight": "", "highlight_zh": "", "legacy_title": "", "legacy_zh": "", "why": "", "risk": ""})
+            out.append({"title": normalize_title(item, lang), "zh": "", "why": "", "risk": ""})
         elif isinstance(item, dict):
             title = normalize_title(item.get("title", ""), lang)
             if title:
-                highlight_value = ensure_switch_in_highlight(sanitize_unconfirmed_natural_wood_text(clean_text(item.get("highlight", "") or item.get("item_highlights", "") or item.get("item_highlight", "") or item.get("product_highlights", "") or item.get("product_highlight", "") or item.get("亮点", "") or item.get("商品亮点", "")), lang), lang)
-                legacy_value = normalize_title(item.get("legacy_title", "") or item.get("long_title", "") or item.get("traditional_title", "") or item.get("legacy", "") or item.get("传统长标题", ""), lang)
                 out.append({
                     "title": title,
-                    "zh": clean_display_zh(item.get("zh", "") or item.get("title_zh", ""), title),
-                    "highlight": highlight_value,
-                    "highlight_zh": clean_display_zh(item.get("highlight_zh", "") or item.get("item_highlights_zh", "") or item.get("item_highlight_zh", "") or item.get("product_highlights_zh", "") or item.get("product_highlight_zh", "") or item.get("亮点中文", "") or item.get("商品亮点中文解释", ""), highlight_value),
-                    "legacy_title": legacy_value,
-                    "legacy_zh": clean_display_zh(item.get("legacy_zh", "") or item.get("long_title_zh", "") or item.get("traditional_title_zh", "") or item.get("legacy_title_zh", "") or item.get("传统标题中文解释", ""), legacy_value),
-                    "why": clean_display_zh(item.get("why", "") or item.get("kept", ""), ""),
-                    "risk": clean_text("" if looks_like_raw_payload(item.get("risk", "")) else (item.get("risk", "") or item.get("risk_code", ""))),
+                    "zh": clean_text(item.get("zh", "") or item.get("title_zh", "")),
+                    "why": clean_text(item.get("why", "") or item.get("kept", "")),
+                    "risk": clean_text(item.get("risk", "")),
                 })
     return out[:3]
+
 
 def parse_candidates(raw: Any, lang: str = "") -> List[Dict[str, str]]:
     data = safe_json(raw, []) if isinstance(raw, str) else raw
@@ -1387,22 +889,7 @@ def parse_batch_candidates(raw: str, langs: List[str]) -> Dict[str, List[Dict[st
     if not isinstance(data, dict):
         return result
     for lang in langs:
-        possible_keys = [
-            lang, lang.lower(), lang.upper(),
-            LANGS[lang]["name"], LANGS[lang]["market"], LANGS[lang]["native"],
-        ]
-        block = None
-        for k in possible_keys:
-            if k in data:
-                block = data.get(k)
-                break
-        if block is None and isinstance(data.get("languages"), dict):
-            for k in possible_keys:
-                if k in data["languages"]:
-                    block = data["languages"].get(k)
-                    break
-        if block is None:
-            continue
+        block = data.get(lang) or data.get(lang.lower()) or data.get(LANGS[lang]["name"]) or []
         cands = parse_candidate_payload(block, lang)
         if cands:
             result[lang] = cands
@@ -1413,35 +900,37 @@ def bump_lang_version(lang: str) -> None:
     d = st.session_state.setdefault("lang_cand_version", {})
     d[lang] = int(d.get(lang, 0)) + 1
 
-
 def candidates_need_compression(cands: List[Dict[str, str]], lang: str) -> bool:
     if not cands:
         return False
-    # V18: regenerate only when all candidates break the hard short-title or highlight limits.
-    def bad(c):
-        t = clean_text(c.get("title", ""))
-        h = clean_text(c.get("highlight", ""))
-        # V18 candidate is not usable unless both short title and item highlights exist.
-        return (not t) or len(t) > TITLE_LIMIT or (not h) or len(h) > HIGHLIGHT_LIMIT or len(h) < HIGHLIGHT_SOFT_MIN or bool(title_blocking_issues(t, lang))
-    return all(bad(c) for c in cands)
+    # Compress only when all candidates are unusable or outside the safe budget.
+    if all(len(clean_text(c.get("title", ""))) > 200 for c in cands):
+        return True
+    if all((title_blocking_issues(c.get("title", ""), lang) or len(clean_text(c.get("title", ""))) > target_title_max()) for c in cands):
+        return True
+    return False
 
 
 def compress_candidates_prompt(lang: str, cands: List[Dict[str, str]]) -> str:
     es_title = current_es_title()
-    current_titles = "\n".join([f"{i+1}. 标题: {c.get('title','')} | 亮点: {c.get('highlight','')}" for i, c in enumerate(cands)])
-    return f"""下面是 {LANGS[lang]['market']} 的 V18 标题候选，但它们过长、过短或风险偏高。请重新生成 3 个更自然、信息更完整的候选。语言必须是 {LANGS[lang]['native']}。
+    current_titles = "\n".join([f"{i+1}. {c.get('title','')}" for i, c in enumerate(cands)])
+    return f"""下面是 {LANGS[lang]['market']} 的标题候选，但它们过长或风险偏高。请重新生成 3 个更短、更自然的标题候选。语言必须是 {LANGS[lang]['native']}。
 
 {title_rules(lang)}
 
-压缩规则：
-- 短标题必须 ≤75 字符，优先品牌 + 产品类型 + 1-2 个最高价值规格；理想 68-72 字符，避免卡到 75/75。
-- 商品亮点必须 ≤125 字符，目标 95-115 字符，用逗号短语补充材质、核心尺寸/底座、调节角度、开关、用途、IP、调光、插头线、上下出光等信息。
-- 传统长标题可生成 ≤200 字符版本，仅作历史兼容参考。
-- 短标题和商品亮点尽量不要重复同一个关键词；不要把旧长标题拆成两个重复字段。
-- 禁止出现 halogen/卤素、incandescent/白炽、Edison、traditional/tradicional、standard bulb 等高风险灯泡词。
-- 如果信息太多：A级进短标题，B级进商品亮点，C级进五点/描述。
+标题预算：{title_budget_text()}
+A/B/C取舍：{must_inherit_text_for_prompt()}
+ES人工意图记录：{intent_prompt_text()}
 
-最终 ES 短标题：
+压缩规则：
+- 必须保留A级信息。
+- B级只保留最重要的 1-2 个，不要堆满所有场景。
+- C级全部移到五点/描述，不要放标题。
+- 目标长度：140-{target_title_max()} 字符；绝对不能超过200。
+- 禁止出现 halogen/卤素、incandescent/白炽、Edison、traditional/tradicional、standard bulb 等高风险灯泡词。
+- 如果 ES 标题已经很长，不要逐字翻译；要本地化压缩。
+
+最终 ES 标题：
 {es_title}
 
 当前过长/风险候选：
@@ -1450,12 +939,10 @@ def compress_candidates_prompt(lang: str, cands: List[Dict[str, str]]) -> str:
 产品事实卡：
 {fact_card_text()}
 
-ES人工意图记录：
-{intent_prompt_text()}
+输出 JSON 数组，每个元素：
+{{"title":"{LANGS[lang]['native']}标题", "zh":"标题中文快译", "kept":"保留的核心信息", "risk":"风险或无明显风险"}}
+只输出 JSON。"""
 
-输出 JSON 数组，每个元素只保留这些字段：
-{{"title":"75字符以内{LANGS[lang]['native']}短标题", "zh":"标题中文审核说明，精简但完整", "highlight":"95-115字符最佳、125字符以内商品亮点", "highlight_zh":"商品亮点中文审核说明，精简但完整", "risk_code":"ok / too_long / grammar_check / missing_core / material_risk"}}
-必须输出 zh 和 highlight_zh，中文解释要精简但完整，不强制字数，不要关键词堆叠，不要漏关键审核点。只输出 JSON。"""
 
 def maybe_auto_compress_candidates(lang: str, cands: List[Dict[str, str]], label_prefix: str) -> List[Dict[str, str]]:
     """If all candidates are over budget, ask the model once for compressed versions.
@@ -1500,31 +987,21 @@ def get_effective_current_title(lang: str) -> str:
     return st.session_state.get(wkey) or st.session_state.get(current_title_state_key(lang), "")
 
 
-
-def set_current_title(lang: str, title: str, zh: str = "", highlight: str = "", highlight_zh: str = "", legacy_title: str = "", legacy_zh: str = "") -> None:
+def set_current_title(lang: str, title: str, zh: str = "") -> None:
     title = normalize_title(title, lang)
-    highlight = clean_text(highlight)
-    legacy_title = normalize_title(legacy_title, lang)
     if lang == "ES":
         st.session_state["selected_es_title"] = title
         st.session_state["selected_es_title_zh"] = zh or ""
         st.session_state["selected_es_title_zh_source"] = title if zh else ""
-        st.session_state["current_highlight::ES"] = highlight
-        st.session_state["current_highlight_zh::ES"] = highlight_zh or ""
-        st.session_state["current_legacy_title::ES"] = legacy_title
-        st.session_state["current_legacy_title_zh::ES"] = legacy_zh or ""
     else:
         current_key = f"current_title::{lang}"
         zh_key = f"current_title_zh::{lang}"
         st.session_state[current_key] = title
         st.session_state[zh_key] = zh or ""
         st.session_state[f"current_title_zh_source::{lang}"] = title if zh else ""
-        st.session_state[f"current_highlight::{lang}"] = highlight
-        st.session_state[f"current_highlight_zh::{lang}"] = highlight_zh or ""
-        st.session_state[f"current_legacy_title::{lang}"] = legacy_title
-        st.session_state[f"current_legacy_title_zh::{lang}"] = legacy_zh or ""
-    # Force editable widgets to remount with the new generated/selected content.
+    # Force the editable title widget to remount with the new generated/selected title.
     bump_title_edit_version(lang)
+
 
 def has_naked_cm(title: str) -> bool:
     """Return True only when cm appears without a nearby numeric value.
@@ -1601,19 +1078,34 @@ def current_es_title() -> str:
     return clean_text(st.session_state.get("confirmed_titles", {}).get("ES", "") or st.session_state.get("selected_es_title", ""))
 
 
-
 def title_budget_text() -> str:
     es = current_es_title()
     n = len(es)
+    if n >= 190:
+        return (
+            f"当前 ES 标题很长（{n}/200）。多国语言标题目标控制在 160-185 字符；"
+            "只保留A级核心信息，B级只保留1-2个最重要场景/风格，C级全部放入五点或描述。"
+        )
+    if n >= 170:
+        return (
+            f"当前 ES 标题较长（{n}/200）。多国语言标题目标控制在 160-190 字符；"
+            "避免逐字照搬西语，优先压缩长场景词。"
+        )
     return (
-        f"V18新规：当前 ES 短标题 {n}/75。多国语言短标题目标 45-75 字符；"
-        "商品亮点目标 80-125 字符；传统长标题参考 ≤200 字符。"
-        "A级信息进短标题，B级信息进商品亮点，C级信息进五点/描述。"
+        f"当前 ES 标题长度适中（{n}/200）。多国语言标题目标 140-190 字符；"
+        "在自然本地化前提下保留核心信息。"
     )
 
 
 def target_title_max() -> int:
-    return TITLE_LIMIT
+    # For auto recommendation and compression prompt, keep a safety margin when ES is long.
+    n = len(current_es_title())
+    if n >= 190:
+        return 185
+    if n >= 170:
+        return 190
+    return 195
+
 
 def extract_sockets_from_text(text: str) -> List[str]:
     found = []
@@ -2077,7 +1569,6 @@ def missing_es_core_concepts(title: str, lang: str = "") -> List[str]:
     return missing_concepts_by_tier(title).get("A", [])
 
 
-
 def title_soft_issues(title: str, lang: str = "") -> List[str]:
     issues: List[str] = []
     t = clean_text(title)
@@ -2085,14 +1576,16 @@ def title_soft_issues(title: str, lang: str = "") -> List[str]:
         return issues
     if has_low_value_single_count(t):
         issues.append("单灯产品标题突出 1 foco / 1 luz / 1 spot 等低价值数量词，建议删除")
-    # V18: do not over-block short title. Many B-level concepts belong in Item Highlights.
     missing = missing_concepts_by_tier(t)
-    # Only show A-level missing when title is extremely generic; otherwise highlight can carry details.
-    if missing.get("A") and len(t) < 45:
-        issues.append("短标题过于泛，可能缺少核心产品识别：" + "、".join(missing["A"][:2]))
+    if missing.get("A"):
+        issues.append("缺失A级核心信息：" + "、".join(missing["A"][:3]))
+    # B-level missing is an optimization hint, not a blocking risk. Keep it light to reduce false alarms.
+    if missing.get("B") and len(clean_text(title)) < 150 and len(current_es_title()) < 185:
+        issues.append("B级信息可优化：" + "、".join(missing["B"][:2]))
     low_value = ["bombilla no incluida", "bulbs not included", "ampoule non incluse", "lampadine non incluse", "lâmpada não incluída", "leuchtmittel nicht enthalten", "żarówka nie", "ljuskälla ingår inte"]
     if any(x in t.lower() for x in low_value):
-        issues.append("短标题写了灯泡不含，应放五点而不是标题")
+        issues.append("标题写了灯泡不含，建议放五点而不是标题")
+    # Supervisor exclusion concepts: if they appear, this is at least a soft risk and cannot be bulk-confirmed.
     for key, zh, kws in localize_intent_keywords(split_intent_items(st.session_state.get("es_intent_exclude", ""))):
         if concept_match_any(t, kws):
             issues.append("触发ES禁止概念：" + zh)
@@ -2100,6 +1593,7 @@ def title_soft_issues(title: str, lang: str = "") -> List[str]:
     if conflict:
         issues.append(conflict)
     return issues
+
 
 def sanitize_model_risk(risk: str, title: str = "") -> str:
     """Remove model-hallucinated or low-confidence risk notes.
@@ -2139,51 +1633,51 @@ def sanitize_model_risk(risk: str, title: str = "") -> str:
         kept.append(part)
     return "；".join(x for x in kept if x).strip("； ")
 
-
 def title_blocking_issues(title: str, lang: str = "") -> List[str]:
     issues = title_quality_issues(title, lang)
-    hard_words = ["短标题为空", "短标题超长", "品牌 Alpinaluz 没有放第一位", "短标题含中文", "短标题含 SKU", "出现裸 cm", "高风险灯泡禁词"]
+    hard_words = ["标题为空", "标题超长", "品牌 Alpinaluz 没有放第一位", "标题含中文", "标题含 SKU", "出现裸 cm", "高风险灯泡禁词"]
     return [x for x in issues if any(w in x for w in hard_words)]
 
 
 def candidate_score(c: Dict[str, str], lang: str) -> int:
     title = normalize_title(c.get("title", ""), lang)
-    highlight = clean_text(c.get("highlight", ""))
     n = len(title)
-    hn = len(highlight)
     score = 100
-    issues = title_quality_issues(title, lang) + highlight_quality_issues(highlight)
+    issues = title_quality_issues(title, lang)
     soft = title_soft_issues(title, lang)
     for issue in issues:
-        if "超长" in issue or "含中文" in issue or "品牌" in issue or "SKU" in issue or "裸 cm" in issue or "高风险" in issue:
+        if "超长" in issue or "含中文" in issue or "品牌" in issue or "SKU" in issue or "裸 cm" in issue:
             score -= 45
         elif "偏短" in issue:
-            score -= 10
+            score -= 14
+        elif "接近上限" in issue:
+            score -= 6
         else:
             score -= 5
     for issue in soft:
         if "单灯产品" in issue:
-            score -= 20
-        elif "核心" in issue:
-            score -= 10
-        elif "触发ES禁止概念" in issue or "不一致" in issue:
+            score -= 30
+        elif "缺失A级核心信息" in issue:
+            score -= 24
+        elif "B级信息" in issue:
+            score -= 5
+        elif "灯泡不含" in issue or "触发ES禁止概念" in issue:
+            score -= 24
+        elif "不一致" in issue:
             score -= 30
         else:
-            score -= 6
-    # Prefer clean short titles and informative highlights.
-    if 45 <= n <= TITLE_LIMIT:
-        score += 20
-    elif 35 <= n < 45:
-        score += 6
-    if HIGHLIGHT_IDEAL_MIN <= hn <= HIGHLIGHT_IDEAL_MAX:
-        score += 28
-    elif HIGHLIGHT_SOFT_MIN <= hn <= HIGHLIGHT_LIMIT:
+            score -= 8
+    # Prefer safe titles within budget. Do not simply choose the fullest/longest one.
+    tmax = target_title_max()
+    if 145 <= n <= min(185, tmax):
         score += 16
-    elif 45 <= hn < HIGHLIGHT_SOFT_MIN:
-        score -= 14
-    joined = (title + " " + highlight).lower()
-    good_markers = ["e27", "g9", "gu10", "led", "ip44", "ip54", "cm", "350", "interrupt", "switch", "schalter", "interruttore", "interrupteur", "madera", "wood", "bois", "legno", "holz", "madeira", "drewno", "aluminium", "aluminio"]
-    score += min(16, sum(2 for x in good_markers if x in joined))
+    elif 120 <= n < 145:
+        score += 3
+    elif min(185, tmax) < n <= 200:
+        score -= 10
+    title_l = title.lower()
+    good_markers = ["e27", "g9", "gu10", "led", "cm", "350", "interrupt", "switch", "schalter", "interruttore", "interrupteur", "madera", "wood", "bois", "legno", "holz", "madeira", "drewno", "trä"]
+    score += min(14, sum(2 for x in good_markers if x in title_l))
     return score
 
 def best_candidate_index(cands: List[Dict[str, str]], lang: str) -> int:
@@ -2192,28 +1686,27 @@ def best_candidate_index(cands: List[Dict[str, str]], lang: str) -> int:
     return max(range(len(cands)), key=lambda i: candidate_score(cands[i], lang))
 
 
-
 def auto_select_best_candidate(lang: str, cands: List[Dict[str, str]]) -> None:
     if not cands:
         return
     idx = best_candidate_index(cands, lang)
     st.session_state[f"selected_candidate_idx::{lang}"] = idx
     chosen = cands[idx]
-    set_current_title(lang, chosen.get("title", ""), chosen.get("zh", ""), chosen.get("highlight", ""), chosen.get("highlight_zh", ""), chosen.get("legacy_title", ""), chosen.get("legacy_zh", ""))
+    set_current_title(lang, chosen.get("title", ""), chosen.get("zh", ""))
 
 
-def auto_confirmable_title(title: str, lang: str, highlight: str = "") -> bool:
+def auto_confirmable_title(title: str, lang: str) -> bool:
+    # One-click auto confirmation is intentionally strict. Yellow titles require human review.
     if title_blocking_issues(title, lang):
         return False
-    h_issues = highlight_quality_issues(highlight)
-    if any("超长" in x or "含中文" in x or "高风险" in x or "为空" in x for x in h_issues):
-        return False
     soft = title_soft_issues(title, lang)
-    risky = [x for x in soft if ("单灯产品" in x or "不一致" in x or "灯泡不含" in x or "触发ES禁止概念" in x)]
+    # A-level missing, single-light count, socket conflict or low-value title text cannot be auto-confirmed.
+    risky = [x for x in soft if ("缺失A级" in x or "单灯产品" in x or "不一致" in x or "灯泡不含" in x or "触发ES禁止概念" in x)]
     if risky:
         return False
-    return 35 <= len(clean_text(title)) <= TITLE_LIMIT and HIGHLIGHT_SOFT_MIN <= len(clean_text(highlight)) <= HIGHLIGHT_LIMIT
-
+    n = len(clean_text(title))
+    # Green auto-confirm should leave room; 191-200 is yellow/manual review.
+    return 120 <= n <= min(190, target_title_max())
 
 def title_status_for_lang(lang: str) -> Tuple[str, str, str]:
     confirmed = st.session_state.get("confirmed_titles", {}).get(lang, "")
@@ -2226,6 +1719,9 @@ def title_status_for_lang(lang: str) -> Tuple[str, str, str]:
     if hard:
         return "s-bad", "需修改", current
     return "s-warn", "AI推荐待确认", current
+
+
+
 
 def forbidden_bulb_hits(text: str) -> List[str]:
     """Return high-risk bulb words that Amazon/EU marketplace should not see."""
@@ -2264,63 +1760,40 @@ def sanitize_forbidden_bulb_text(text: str) -> str:
     t = re.sub(r"\s{2,}", " ", t).strip(" ,;.-")
     return clean_text(t)
 
-
 def title_quality_issues(title: str, lang: str = "") -> List[str]:
-    """Hard/format issues for V18 short title."""
+    """Hard/format issues. Soft operating risks are handled by title_soft_issues()."""
     issues: List[str] = []
     t = clean_text(title)
     if not t:
-        issues.append("短标题为空")
+        issues.append("标题为空")
         return issues
     n = len(t)
-    if n > TITLE_LIMIT:
-        issues.append(f"短标题超长 {n}/{TITLE_LIMIT}，不能确认")
-    elif n < 25:
-        issues.append(f"短标题偏短 {n}/{TITLE_LIMIT}，可能不够清楚")
-    elif n >= 73:
-        issues.append(f"短标题接近上限 {n}/{TITLE_LIMIT}，建议压到68-72字符留余量")
+    if n > 200:
+        issues.append(f"标题超长 {n}/200，不能确认")
+    elif n > 190:
+        issues.append(f"接近上限 {n}/200，后续加词空间很小")
+    elif n < 120:
+        issues.append(f"标题偏短 {n}/140-200，可能缺少SEO信息")
     if not t.lower().startswith("alpinaluz"):
         issues.append("品牌 Alpinaluz 没有放第一位")
     if re.search(r"[一-鿿]", t):
-        issues.append("短标题含中文")
+        issues.append("标题含中文")
     sku = clean_text(st.session_state.get("sku", ""))
     if sku and sku.lower() in t.lower():
-        issues.append("短标题含 SKU / 型号代码")
+        issues.append("标题含 SKU / 型号代码")
     if has_naked_cm(t):
         issues.append("出现裸 cm，前面没有具体数字")
     forbidden = forbidden_bulb_hits(t)
     if forbidden:
-        issues.append("短标题含 Amazon 高风险灯泡禁词：" + ", ".join(forbidden[:4]))
-    return issues
-
-
-def highlight_quality_issues(highlight: str) -> List[str]:
-    issues: List[str] = []
-    h = clean_text(highlight)
-    if not h:
-        issues.append("商品亮点为空")
-        return issues
-    n = len(h)
-    if n > HIGHLIGHT_LIMIT:
-        issues.append(f"商品亮点超长 {n}/{HIGHLIGHT_LIMIT}")
-    elif n < HIGHLIGHT_SOFT_MIN:
-        issues.append(f"商品亮点偏短 {n}/{HIGHLIGHT_LIMIT}，建议补充材质、Ø尺寸/底座、调节、开关和使用场景")
-    elif n < HIGHLIGHT_IDEAL_MIN:
-        issues.append(f"商品亮点可再丰富 {n}/{HIGHLIGHT_LIMIT}，目标 {HIGHLIGHT_IDEAL_MIN}-{HIGHLIGHT_IDEAL_MAX} 字符")
-    if re.search(r"[一-鿿]", h):
-        issues.append("商品亮点含中文")
-    forbidden = forbidden_bulb_hits(h)
-    if forbidden:
-        issues.append("商品亮点含 Amazon 高风险灯泡禁词：" + ", ".join(forbidden[:4]))
+        issues.append("标题含 Amazon 高风险灯泡禁词：" + ", ".join(forbidden[:4]))
     return issues
 
 
 def candidate_display_risk(c: Dict[str, str], lang: str) -> str:
     title = c.get("title", "")
-    highlight = c.get("highlight", "")
-    issues = title_quality_issues(title, lang) + highlight_quality_issues(highlight)
+    issues = title_quality_issues(title, lang)
     soft = title_soft_issues(title, lang)
-    model_risk = sanitize_model_risk(c.get("risk", ""), title + " " + highlight)
+    model_risk = sanitize_model_risk(c.get("risk", ""), title)
     parts = []
     if issues:
         parts.extend(issues)
@@ -2332,45 +1805,27 @@ def candidate_display_risk(c: Dict[str, str], lang: str) -> str:
         parts.append("无明显风险")
     return "；".join(dict.fromkeys(parts))
 
-
-def length_card_html(label: str, value: int, limit: int, state: str, hint: str = "") -> str:
-    return (
-        f"<div class='length-card {state}'>"
-        f"<div class='k'>{html.escape(label)}</div>"
-        f"<div class='v'>{value}/{limit}</div>"
-        f"<div class='hint'>{html.escape(hint)}</div>"
-        f"</div>"
-    )
-
-
-def render_title_length_box(title: str, lang: str, highlight: str = "") -> bool:
+def render_title_length_box(title: str, lang: str) -> bool:
     n = len(clean_text(title))
-    hn = len(clean_text(highlight))
-    issues = title_quality_issues(title, lang) + highlight_quality_issues(highlight)
+    issues = title_quality_issues(title, lang)
     soft = title_soft_issues(title, lang)
     hard = title_blocking_issues(title, lang)
-    blocking = n > TITLE_LIMIT or hn > HIGHLIGHT_LIMIT or not clean_text(title) or not clean_text(highlight) or bool(hard) or any("高风险灯泡禁词" in x or "含中文" in x for x in issues)
-    title_state = "bad-len" if (not clean_text(title) or n > TITLE_LIMIT or bool(hard)) else ("warn-len" if n < 35 else "ok-len")
-    high_state = "bad-len" if (not clean_text(highlight) or hn > HIGHLIGHT_LIMIT or any("商品亮点含" in x for x in issues)) else ("warn-len" if hn < HIGHLIGHT_IDEAL_MIN else "ok-len")
-    title_hint = "可确认" if title_state == "ok-len" else ("过长/硬风险" if title_state == "bad-len" else "偏短，建议检查")
-    high_hint = f"理想 {HIGHLIGHT_IDEAL_MIN}-{HIGHLIGHT_IDEAL_MAX}" if high_state != "bad-len" else "为空/过长/风险"
-    html_cards = "<div class='length-grid'>" + length_card_html("短标题", n, TITLE_LIMIT, title_state, title_hint) + length_card_html("商品亮点", hn, HIGHLIGHT_LIMIT, high_state, high_hint) + length_card_html("传统标题", len(clean_text(st.session_state.get('current_legacy_title::' + lang, '') if lang != 'ES' else st.session_state.get('current_legacy_title::ES', ''))), LEGACY_TITLE_LIMIT, "ok-len", "参考") + "</div>"
-    st.markdown(html_cards, unsafe_allow_html=True)
-    if highlight:
-        st.markdown(f"<div class='highlight-callout'><span class='label'>商品亮点 / Item Highlights</span>{safe_html_text(clean_text(highlight))}</div>", unsafe_allow_html=True)
+    blocking = n > 200 or not clean_text(title) or bool(hard)
+    cls = "bad" if blocking else ("warn" if issues or soft else "ok")
+    msg = f"标题长度：{n}/200"
     notes = issues + soft
     if notes:
-        st.markdown(f"<div class='{ 'bad' if blocking else 'warn'}'><b>检查提示：</b>{safe_html_text('；'.join(notes))}</div>", unsafe_allow_html=True)
+        msg += "｜" + "；".join(notes)
     else:
-        st.markdown("<div class='ok'><b>字数与硬规则：</b>可确认</div>", unsafe_allow_html=True)
-    rec = recognized_concepts_summary((title or "") + " " + (highlight or ""))
+        msg += "｜可确认"
+    st.markdown(f"<div class='{cls}'>{html.escape(msg)}</div>", unsafe_allow_html=True)
+    rec = recognized_concepts_summary(title)
     if rec and not blocking:
         st.markdown(f"<div class='zhbox'><b>规则已识别核心：</b>{html.escape(rec)}</div>", unsafe_allow_html=True)
     return not blocking
 
-
 def render_candidate_cards(cands: List[Dict[str, str]], lang: str, prefix: str, compact: bool = None) -> None:
-    """Render V18 candidates: short title + item highlights + legacy title."""
+    """Render candidates. In newbie mode show only AI recommended by default; alternatives are folded."""
     if compact is None:
         compact = bool(st.session_state.get("newbie_auto_title", True))
     if not cands:
@@ -2381,15 +1836,9 @@ def render_candidate_cards(cands: List[Dict[str, str]], lang: str, prefix: str, 
     def one_card(i: int, c: Dict[str, str]) -> None:
         title = c.get("title", "")
         zh = c.get("zh", "")
-        highlight = c.get("highlight", "")
-        highlight_zh = c.get("highlight_zh", "")
-        legacy_title = c.get("legacy_title", "")
-        legacy_zh = c.get("legacy_zh", "")
         why = c.get("why", "") or c.get("kept", "")
         risk = candidate_display_risk(c, lang)
         n = len(title)
-        hn = len(highlight)
-        ln = len(legacy_title)
         selected = (i == selected_idx)
         recommended = (i == recommended_idx)
         border = "#22c55e" if recommended else ("#60a5fa" if selected else "#334155")
@@ -2400,37 +1849,26 @@ def render_candidate_cards(cands: List[Dict[str, str]], lang: str, prefix: str, 
             badges.append("当前标题")
         if not badges:
             badges.append("备选")
-        recognized = recognized_concepts_summary((title or "") + " " + (highlight or ""))
-        rec_html = f"<div class='concept-ok'>规则识别：✓ {safe_html_text(recognized)}</div>" if recognized else ""
-        legacy_html = f"<div class='small-muted'><b>传统200字标题参考（{ln}/200）：</b>{safe_html_text(legacy_title)}</div><div class='small-muted'>中文：{safe_html_text(legacy_zh)}</div>" if legacy_title else ""
-        # V18.2.8: newbie-first card. Default view shows only what a new operator needs
-        # to confirm; all supervisor/debug details stay folded to avoid visual noise.
-        with st.container(border=True):
-            st.caption(f"候选{i+1} · {' / '.join(badges)} · 短标题 {n}/{TITLE_LIMIT} · 亮点 {hn}/{HIGHLIGHT_LIMIT}")
-            st.markdown(f"**短标题：** {title}")
-            st.success(f"**商品亮点 / Item Highlights** · {hn}/{HIGHLIGHT_LIMIT}\n\n{highlight}")
-            quick_zh = zh or clean_display_zh('', title)
-            quick_high_zh = highlight_zh or clean_display_zh('', highlight)
-            st.info(f"中文快看：{quick_zh}\n\n亮点说明：{quick_high_zh}")
-            if risk and risk != "无明显风险":
-                st.warning(f"规则提示：{risk}")
-            else:
-                st.caption("规则提示：无明显硬风险，可作为一键确认候选。")
-            with st.expander("主管/高级信息：传统标题、规则识别、完整检查", expanded=False):
-                if legacy_title:
-                    st.write(f"传统200字标题参考（{ln}/200）：{legacy_title}")
-                    if legacy_zh:
-                        st.write(f"传统标题中文：{legacy_zh}")
-                st.write(f"规则检查：{risk}")
-                if recognized:
-                    st.write(f"规则识别：✓ {recognized}")
+        recognized = recognized_concepts_summary(title)
+        rec_html = f"<div class='concept-ok'>规则识别：✓ {html.escape(recognized)}</div>" if recognized else ""
+        st.markdown(
+            f"""<div class='candidate-card {'recommended' if recommended else ''}' style='border-color:{border};'>
+            <div class='small-muted'>候选{i+1} · {n}/200 字符 · {html.escape(' / '.join(badges))}</div>
+            <div class='candidate-title'>{html.escape(title)}</div>
+            <div class='candidate-zh'>中文：{html.escape(zh or '暂无中文解释')}</div>
+            <div class='small-muted'>风险/注意：{html.escape(risk)}</div>
+            {rec_html}
+            {f"<div class='small-muted'>核心保留：{html.escape(why)}</div>" if why else ""}
+            </div>""",
+            unsafe_allow_html=True,
+        )
         if st.button(f"选择候选 {i+1}", key=f"select_candidate::{prefix}::{i+1}"):
             st.session_state[f"selected_candidate_idx::{lang}"] = i
-            set_current_title(lang, title, zh, highlight, highlight_zh, legacy_title, legacy_zh)
+            set_current_title(lang, title, zh)
             st.rerun()
 
     if compact:
-        st.markdown("##### AI 推荐：短标题 + 商品亮点（新手默认只看这个）")
+        st.markdown("##### AI 推荐标题（新手默认只看这个）")
         one_card(recommended_idx, cands[recommended_idx])
         with st.expander("高级：查看另外两个候选 / 手动选择", expanded=False):
             for i, c in enumerate(cands):
@@ -2440,69 +1878,15 @@ def render_candidate_cards(cands: List[Dict[str, str]], lang: str, prefix: str, 
         for i, c in enumerate(cands):
             one_card(i, c)
 
-
-SWITCH_TERMS_BY_LANG = {
-    "ES": ["interruptor"], "EN": ["switch"], "FR": ["interrupteur"], "IT": ["interruttore"],
-    "PT": ["interruptor"], "DE": ["schalter"], "NL": ["schakelaar"], "PL": ["włącznik", "wlacznik"], "SE": ["strömbrytare", "strombrytare"],
-}
-
-def switch_confirmed() -> bool:
-    fc = st.session_state.get("fact_card", {}) or {}
-    blob = " ".join([
-        str(fc.get("switch_included", "")), str(fc.get("switch_type", "")),
-        str(fc.get("core_selling_points", "")), str(fc.get("must_keep_in_titles", "")),
-        str(fc.get("notes_for_copy", "")), str(st.session_state.get("tech_notes", "")),
-    ]).lower()
-    positive = ["已确认有", "confirmado", "confirmada", "confirmed", "integrado", "integrated", "incorporado", "built-in", "interrup", "switch", "schalter", "włącz", "wlacz", "schakel", "strömbryt", "strombryt", "开关"]
-    negative = ["已确认无", "sin interruptor", "no switch", "ohne schalter", "senza interruttore", "sem interruptor", "未确认"]
-    return any(x in blob for x in positive) and not any(x in blob for x in negative)
-
-def highlight_has_switch(text: str, lang: str = "") -> bool:
-    low = clean_text(text).lower()
-    terms = SWITCH_TERMS_BY_LANG.get(lang, []) + ["switch", "interrup", "schalter", "włącz", "wlacz", "schakel", "strömbryt", "strombryt", "开关"]
-    return any(t.lower() in low for t in terms)
-
-def switch_phrase_for_lang(lang: str) -> str:
-    return {
-        "ES": "con interruptor", "EN": "with switch", "FR": "avec interrupteur", "IT": "con interruttore",
-        "PT": "com interruptor", "DE": "mit Schalter", "NL": "met schakelaar", "PL": "z włącznikiem", "SE": "med strömbrytare",
-    }.get(lang, "with switch")
-
-def ensure_switch_in_highlight(text: str, lang: str = "") -> str:
-    h = clean_text(text)
-    if not h or not switch_confirmed() or highlight_has_switch(h, lang):
-        return h
-    phrase = switch_phrase_for_lang(lang)
-    candidate = clean_text(h.rstrip(" .,;") + ", " + phrase)
-    if len(candidate) <= HIGHLIGHT_LIMIT:
-        return candidate
-    # If too long, replace a lower-value ending scene phrase with the switch phrase.
-    scene_patterns = [
-        r",?\s*ideal\s+para\s+[^,;]{8,40}$", r",?\s*ideal\s+for\s+[^,;]{8,40}$", r",?\s*idéal(?:e)?\s+[^,;]{8,40}$",
-        r",?\s*ideale\s+per\s+[^,;]{8,40}$", r",?\s*ideal\s+[^,;]{8,40}$", r",?\s*idealny\s+[^,;]{8,40}$",
-        r",?\s*perfekt\s+[^,;]{8,40}$", r",?\s*ideaal\s+[^,;]{8,40}$",
-    ]
-    for pat in scene_patterns:
-        replaced = re.sub(pat, ", " + phrase, h, flags=re.I)
-        if replaced != h and len(clean_text(replaced)) <= HIGHLIGHT_LIMIT:
-            return clean_text(replaced)
-    # Last resort: truncate at previous comma and append switch.
-    base = h
-    while len(clean_text(base.rstrip(" .,;") + ", " + phrase)) > HIGHLIGHT_LIMIT and "," in base:
-        base = base.rsplit(",", 1)[0]
-    return clean_text(base.rstrip(" .,;") + ", " + phrase)[:HIGHLIGHT_LIMIT].rstrip(" ,.;")
-
 def clean_listing(data: Dict[str, Any], lang: str) -> Dict[str, Any]:
     title = normalize_title(sanitize_forbidden_bulb_text(st.session_state.get("confirmed_titles", {}).get(lang, "") or data.get("title", "")), lang)
-    item_highlights = ensure_switch_in_highlight(sanitize_unconfirmed_natural_wood_text(sanitize_forbidden_bulb_text(clean_text(st.session_state.get("confirmed_highlights", {}).get(lang, "") or data.get("item_highlights", "") or data.get("highlight", ""))), lang), lang)[:HIGHLIGHT_LIMIT]
-    legacy_title = normalize_title(sanitize_unconfirmed_natural_wood_text(sanitize_forbidden_bulb_text(st.session_state.get("confirmed_legacy_titles", {}).get(lang, "") or data.get("legacy_title", "")), lang), lang)[:LEGACY_TITLE_LIMIT]
     bullets = data.get("bullets") or []
     bullets_zh = data.get("bullets_zh") or []
     if not isinstance(bullets, list):
         bullets = [str(bullets)]
     if not isinstance(bullets_zh, list):
         bullets_zh = [str(bullets_zh)]
-    bullets = [sanitize_unconfirmed_natural_wood_text(sanitize_forbidden_bulb_text(clean_text(x)), lang) for x in bullets if clean_text(x)][:5]
+    bullets = [sanitize_forbidden_bulb_text(clean_text(x)) for x in bullets if clean_text(x)][:5]
     bullets_zh = [clean_text(x) for x in bullets_zh if clean_text(x)][:5]
     while len(bullets) < 5:
         bullets.append("")
@@ -2515,136 +1899,24 @@ def clean_listing(data: Dict[str, Any], lang: str) -> Dict[str, Any]:
     for m in aplus[:5]:
         if isinstance(m, dict):
             mm = dict(m)
-            mm["title"] = sanitize_unconfirmed_natural_wood_text(sanitize_forbidden_bulb_text(mm.get("title", "")), lang)
-            mm["body"] = sanitize_unconfirmed_natural_wood_text(sanitize_forbidden_bulb_text(mm.get("body", "")), lang)
+            mm["title"] = sanitize_forbidden_bulb_text(mm.get("title", ""))
+            mm["body"] = sanitize_forbidden_bulb_text(mm.get("body", ""))
             cleaned_aplus.append(mm)
     return {
         "title": title,
-        "title_zh": clean_display_zh(data.get("title_zh", ""), title),
-        "item_highlights": item_highlights,
-        "item_highlights_zh": clean_display_zh(data.get("item_highlights_zh", ""), item_highlights),
-        "legacy_title": legacy_title,
-        "legacy_title_zh": clean_display_zh(data.get("legacy_title_zh", ""), legacy_title),
+        "title_zh": clean_text(data.get("title_zh") or st.session_state.get("confirmed_title_zh", {}).get(lang, "")),
         "bullets": bullets[:5],
-        "bullets_zh": [clean_display_zh(x, bullets[i] if i < len(bullets) else "") for i, x in enumerate(bullets_zh[:5])] if any(clean_text(x) for x in bullets_zh[:5]) else [],
-        "description": sanitize_unconfirmed_natural_wood_text(sanitize_forbidden_bulb_text(str(data.get("description", "")).strip()), lang),
-        "description_zh": clean_display_zh(data.get("description_zh", ""), sanitize_unconfirmed_natural_wood_text(sanitize_forbidden_bulb_text(str(data.get("description", "")).strip()), lang)[:1200]),
-        "search_terms": sanitize_unconfirmed_natural_wood_text(sanitize_forbidden_bulb_text(clean_text(data.get("search_terms", ""))), lang)[:250],
-        "search_terms_zh": clean_display_zh(data.get("search_terms_zh", ""), data.get("search_terms", "")) or "搜索词围绕产品类型、灯头、颜色材质、开关、可调节、尺寸和使用场景。",
+        "bullets_zh": bullets_zh[:5],
+        "description": sanitize_forbidden_bulb_text(str(data.get("description", "")).strip()),
+        "description_zh": str(data.get("description_zh", "")).strip(),
+        "search_terms": sanitize_forbidden_bulb_text(clean_text(data.get("search_terms", "")))[:250],
+        "search_terms_zh": str(data.get("search_terms_zh", "")).strip(),
         "aplus": cleaned_aplus[:5],
     }
 
 
-
-def listing_zh_prompt(lang: str, data: Dict[str, Any]) -> str:
-    return f"""请把下面 {LANGS[lang]['native']} Listing 的主要内容翻译/解释成中文，供中国运营审核。
-要求：
-- 只输出 JSON；
-- 不要改外语原文；
-- bullets_zh 必须5条，对应5条五点；
-- description_zh 只需摘要，不要逐字长翻；
-- search_terms_zh 简短说明搜索词方向。
-
-Listing JSON:
-{json.dumps({
-    'title': data.get('title',''),
-    'item_highlights': data.get('item_highlights',''),
-    'legacy_title': data.get('legacy_title',''),
-    'bullets': data.get('bullets',[]),
-    'description': data.get('description',''),
-    'search_terms': data.get('search_terms',''),
-}, ensure_ascii=False)}
-
-输出 JSON:
-{{"title_zh":"", "item_highlights_zh":"", "legacy_title_zh":"", "bullets_zh":["","","","",""], "description_zh":"", "search_terms_zh":""}}
-"""
-
-
-
-def listing_zh_is_good(data: Dict[str, Any]) -> bool:
-    """中文解释是否足够给新手看。不能是空白、不能只是关键词碎片。"""
-    def good_sentence(x: Any, min_len: int = 8) -> bool:
-        t = clean_text(str(x or ""))
-        if not t or t in {"中文解释未生成", "暂无中文解释"}:
-            return False
-        if len(t) < min_len:
-            return False
-        # Keyword-only strings usually have many Chinese commas but no sentence ending or verbs.
-        if "、" in t and not any(p in t for p in "。；，适合采用带配备支持方便用于可"):
-            return False
-        return has_cjk(t)
-    if not good_sentence(data.get("title_zh"), 16):
-        return False
-    if not good_sentence(data.get("item_highlights_zh"), 16):
-        return False
-    bzh = data.get("bullets_zh") or []
-    if not isinstance(bzh, list) or len([x for x in bzh if good_sentence(x, 6)]) < 5:
-        return False
-    if not good_sentence(data.get("description_zh"), 20):
-        return False
-    if not good_sentence(data.get("search_terms_zh"), 10):
-        return False
-    return True
-
-def enrich_listing_with_zh(lang: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    try:
-        raw = llm(listing_zh_prompt(lang, data), "你是电商 Listing 中文审核解释助手。只输出 JSON。", model=st.session_state.get("translation_model", "gpt-5.4-mini"), effort="medium", label=f"{lang}中文解释mini")
-        zh = safe_json(raw, {})
-        if isinstance(zh, dict):
-            for key in ["title_zh", "item_highlights_zh", "legacy_title_zh", "description_zh", "search_terms_zh"]:
-                if clean_text(zh.get(key, "")):
-                    data[key] = clean_text(zh.get(key, ""))
-            if isinstance(zh.get("bullets_zh"), list):
-                data["bullets_zh"] = [clean_text(x) for x in zh.get("bullets_zh", [])][:5]
-    except Exception as e:
-        record_rule_step(f"{lang}中文解释mini失败", str(e))
-    return data
-
-def listing_validation_errors(data: Dict[str, Any]) -> List[str]:
-    errors: List[str] = []
-    if not clean_text(data.get("title", "")):
-        errors.append("缺少短标题")
-    if len(clean_text(data.get("title", ""))) > TITLE_LIMIT:
-        errors.append("短标题超长")
-    if not clean_text(data.get("item_highlights", "")):
-        errors.append("缺少商品亮点")
-    if len(clean_text(data.get("item_highlights", ""))) > HIGHLIGHT_LIMIT:
-        errors.append("商品亮点超长")
-    bullets = [clean_text(x) for x in data.get("bullets", []) if clean_text(x)]
-    if len(bullets) < 5:
-        errors.append(f"五点不完整：{len(bullets)}/5")
-    if len(clean_text(data.get("description", ""))) < 300:
-        errors.append("长描述过短或为空")
-    if len(clean_text(data.get("search_terms", ""))) < 30:
-        errors.append("Search Terms 过短或为空")
-    aplus = data.get("aplus", [])
-    valid_aplus = [m for m in aplus if isinstance(m, dict) and clean_text(m.get("title", "")) and clean_text(m.get("body", ""))]
-    if len(valid_aplus) < 5:
-        errors.append(f"A+模块不完整：{len(valid_aplus)}/5")
-    combined = listing_to_text_for_validation(data)
-    forbidden = forbidden_bulb_hits(combined)
-    if forbidden:
-        errors.append("存在高风险灯泡词：" + ", ".join(forbidden[:4]))
-    return errors
-
-
-def listing_to_text_for_validation(data: Dict[str, Any]) -> str:
-    parts = [
-        data.get("title", ""), data.get("item_highlights", ""), data.get("legacy_title", ""),
-        " ".join(data.get("bullets", []) if isinstance(data.get("bullets", []), list) else []),
-        data.get("description", ""), data.get("search_terms", ""),
-    ]
-    for m in data.get("aplus", []) if isinstance(data.get("aplus", []), list) else []:
-        if isinstance(m, dict):
-            parts.extend([str(m.get("title", "")), str(m.get("body", ""))])
-    return " ".join(parts)
-
-
-def is_listing_complete(data: Dict[str, Any]) -> bool:
-    return bool(data) and not listing_validation_errors(data)
-
 def listing_to_text(lang: str, data: Dict[str, Any]) -> str:
-    lines = [f"[{lang}]", "", "[TITLE ≤75]", data.get("title", ""), "", "[标题中文解释]", data.get("title_zh", ""), "", "[ITEM HIGHLIGHTS ≤125]", data.get("item_highlights", ""), "", "[商品亮点中文解释]", data.get("item_highlights_zh", ""), "", "[LEGACY TITLE ≤200 - 参考]", data.get("legacy_title", ""), "", "[传统标题中文解释]", data.get("legacy_title_zh", ""), "", "[BULLETS]"]
+    lines = [f"[{lang}]", "", "[TITLE]", data.get("title", ""), "", "[标题中文解释]", data.get("title_zh", ""), "", "[BULLETS]"]
     for i, b in enumerate(data.get("bullets", [])[:5], 1):
         lines.append(f"{i}. {b}")
     lines += ["", "[五点中文解释]"]
@@ -2665,46 +1937,26 @@ def listing_to_text(lang: str, data: Dict[str, Any]) -> str:
 
 def render_stats(data: Dict[str, Any]) -> None:
     title_len = len(data.get("title", ""))
-    high_len = len(data.get("item_highlights", ""))
-    legacy_len = len(data.get("legacy_title", ""))
     st.markdown("#### 字数检测")
-    st.markdown(
-        "<div class='length-grid'>"
-        + length_card_html("短标题", title_len, TITLE_LIMIT, "ok-len" if 35 <= title_len <= TITLE_LIMIT else "bad-len", "主标题")
-        + length_card_html("商品亮点", high_len, HIGHLIGHT_LIMIT, "ok-len" if HIGHLIGHT_IDEAL_MIN <= high_len <= HIGHLIGHT_LIMIT else ("warn-len" if high_len < HIGHLIGHT_IDEAL_MIN and high_len <= HIGHLIGHT_LIMIT else "bad-len"), f"理想 {HIGHLIGHT_IDEAL_MIN}-{HIGHLIGHT_IDEAL_MAX}")
-        + length_card_html("传统标题", legacy_len, LEGACY_TITLE_LIMIT, "ok-len" if legacy_len <= LEGACY_TITLE_LIMIT else "bad-len", "参考")
-        + "</div>",
-        unsafe_allow_html=True,
-    )
-    if data.get("item_highlights"):
-        st.markdown(f"<div class='highlight-callout'><span class='label'>商品亮点 / Item Highlights</span>{html.escape(clean_text(data.get('item_highlights', '')))}</div>", unsafe_allow_html=True)
-    errors = listing_validation_errors(data)
-    if errors:
-        st.markdown(f"<div class='export-warning'>导出拦截风险：{html.escape('；'.join(errors))}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='{ 'ok' if 120 <= title_len <= 210 else 'warn'}'>标题: {title_len} 字符 / 建议 140-200</div>", unsafe_allow_html=True)
     for i, b in enumerate(data.get("bullets", [])[:5], 1):
         n = len(b)
-        cls = "ok" if 130 <= n <= 300 else "warn"
-        st.markdown(f"<div class='{cls}'><b>五点{i}</b>: {n} 字符 / 建议 150-280</div>", unsafe_allow_html=True)
+        cls = "ok" if 130 <= n <= 260 else "warn"
+        st.markdown(f"<div class='{cls}'>五点{i}: {n} 字符 / 建议 150-250</div>", unsafe_allow_html=True)
     dlen = len(data.get("description", ""))
-    st.markdown(f"<div class='{ 'ok' if dlen >= 700 else 'warn'}'><b>长描述</b>: {dlen} 字符 / 建议 ≥700</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='{ 'ok' if dlen >= 700 else 'warn'}'>长描述: {dlen} 字符 / 建议 ≥700</div>", unsafe_allow_html=True)
     slen = len(data.get("search_terms", ""))
-    st.markdown(f"<div class='{ 'ok' if 30 <= slen <= 250 else 'bad'}'><b>Search Terms</b>: {slen} 字符 / 30-250</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='{ 'ok' if slen <= 250 else 'bad'}'>Search Terms: {slen} 字符 / ≤250</div>", unsafe_allow_html=True)
+
 
 def make_zip() -> bytes:
     mem = io.BytesIO()
     sku = st.session_state.get("sku", "SKU") or "SKU"
     with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as z:
-        skipped = []
         for lang, data in st.session_state.get("listings", {}).items():
-            if data and is_listing_complete(data):
+            if data:
                 z.writestr(f"listing/{lang}_Listing.txt", listing_to_text(lang, data))
-            elif data:
-                skipped.append(f"{lang}: " + "；".join(listing_validation_errors(data)))
-        readme = f"Alpinaluz Listing Generator {APP_VERSION}\n只导出完整 listing 文件。V18.2.8 固定五点顺序模板，中文解释精简但完整，不新增上报卡，保留新手截图流程；明确仿木/MDF/机器编织时才降级材质表达。\n"
-        if skipped:
-            readme += "\n以下国家因正文不完整未导出：\n" + "\n".join(skipped) + "\n"
-            z.writestr("_INCOMPLETE_SKIPPED.txt", "\n".join(skipped))
-        z.writestr("README.txt", readme)
+        z.writestr("README.txt", f"Alpinaluz Listing Generator {APP_VERSION}\n只导出 listing 文件，标题均来自人工确认标题。\n")
     mem.seek(0)
     return mem.getvalue()
 
@@ -2718,9 +1970,6 @@ with st.sidebar:
     st.number_input("图片事实识别最多张数", min_value=0, max_value=6, value=3, step=1, key="image_limit", help="建议最多3张：主图、尺寸图、关键细节图。")
     st.checkbox("生成完成声音提示", value=True, key="sound_notify")
     st.checkbox("新手模式：AI自动推荐标题", value=True, key="newbie_auto_title", help="默认只显示AI推荐标题，其他候选折叠到高级区。")
-    st.checkbox("V18.2.8：多国只用压缩母版", value=True, key="use_compressed_master", help="多国语言标题和正文不再重复传完整旧文案。")
-    st.checkbox("正文生成跳过已生成国家", value=True, key="skip_existing_listings", help="已经生成过正文的国家不会重复烧 token，除非先删除/取消。")
-    st.checkbox("生成完整中文解释（默认开启，给主管审核用）", value=True, key="generate_listing_zh", help="默认开启：每个国家生成自然中文解释，方便不会外语的同事审核；不要为了省这点 token 影响使用。")
     st.markdown("---")
     st.header("目标国家")
     st.multiselect("选择要做的国家", TARGET_LANGS, default=st.session_state.get("target_langs", TARGET_LANGS), key="target_langs")
@@ -2730,32 +1979,16 @@ with st.sidebar:
     st.metric("调用次数", totals["calls"])
     st.metric("估算费用", f"${totals['cost']:.3f}")
     st.caption(f"输入 {totals['input']:,} / 输出 {totals['output']:,} tokens")
-    with st.expander("费用明细 / 每一步 token", expanded=False):
-        logs = st.session_state.get("api_usage_log", [])
-        if not logs:
-            st.caption("暂无调用记录。规则检查和跳过步骤会显示为 RULE / 0 token。")
-        else:
-            for x in reversed(logs[-30:]):
-                note = f" · {x.get('note','')}" if x.get('note') else ""
-                st.write(f"{x.get('time','')} · {x['label']} · {x['model']} · in {x['input_tokens']:,} / out {x['output_tokens']:,} / total {x.get('total_tokens', x['input_tokens'] + x['output_tokens']):,} · ${x['cost']:.3f}{note}")
-    logs_for_csv = st.session_state.get("api_usage_log", [])
-    if logs_for_csv:
-        csv_lines = ["time,label,model,input_tokens,output_tokens,total_tokens,cost,note"]
-        for x in logs_for_csv:
-            row = [
-                str(x.get("time", "")), str(x.get("label", "")).replace(",", " "), str(x.get("model", "")),
-                str(x.get("input_tokens", 0)), str(x.get("output_tokens", 0)), str(x.get("total_tokens", 0)),
-                f"{x.get('cost', 0.0):.6f}", str(x.get("note", "")).replace(",", " ").replace("\n", " "),
-            ]
-            csv_lines.append(",".join(row))
-        st.download_button("下载 Token 明细 CSV", data="\n".join(csv_lines).encode("utf-8-sig"), file_name=f"token_usage_{APP_VERSION}.csv", mime="text/csv")
+    with st.expander("最近调用", expanded=False):
+        for x in reversed(st.session_state.get("api_usage_log", [])[-10:]):
+            st.write(f"{x['label']} · {x['model']} · in {x['input_tokens']:,} / out {x['output_tokens']:,} · ${x['cost']:.3f}")
     if st.button("清空费用统计"):
         st.session_state["api_usage_log"] = []
         st.rerun()
 
 # ------------------------- header -------------------------
 st.title(f"Alpinaluz Listing Generator {APP_VERSION}")
-st.markdown("<div class='info-card'>新流程：①资料与事实卡 → ②ES标题确认 → ③AI预审多国标题 → ④绿色批量确认/黄色人工检查 → ⑤统一生成完整正文包。V18.2.8：保持新手截图流程，不新增上报卡；固定五点顺序；中文解释精简但完整；明确仿木/MDF才降级材质表达。</div>", unsafe_allow_html=True)
+st.markdown("<div class='info-card'>新流程：①资料与事实卡 → ②ES标题确认 → ③AI预审多国标题 → ④绿色批量确认/黄色人工检查 → ⑤统一生成完整正文包。V17.11 固定输出全套内容（标题+五点+描述+Search Terms+A+），保留 ES 人工意图同步，并加入低误报概念识别：多语言标题会识别“上下出光”“磨砂玻璃”“遮蔽户外”等本地表达，减少误判。</div>", unsafe_allow_html=True)
 
 # ------------------------- Section 1: input and facts -------------------------
 st.header("1）资料输入与产品事实卡")
@@ -2791,9 +2024,6 @@ with col2:
                 data = safe_json(raw, {})
                 if isinstance(data, dict):
                     st.session_state["fact_card"] = {k: data.get(k, "") for k in FACT_KEYS}
-                    st.session_state["compressed_master_cache"] = ""
-                    st.session_state["compressed_master_signature"] = ""
-                    record_rule_step("事实卡缓存刷新", "规则处理：清空旧压缩母版缓存")
                     st.success("事实卡已生成，请人工检查。")
                 else:
                     st.error("事实卡解析失败，请重试或减少输入内容。")
@@ -2850,99 +2080,55 @@ if es_cands:
     st.subheader("ES 候选标题：AI已自动推荐，其他候选在高级区")
     render_candidate_cards(es_cands, "ES", f"es::{st.session_state.get('es_cand_version', 0)}")
 
-# Step 2C: current short title + item highlights
+# Step 2C: current title
 current_es_value = st.session_state.get("selected_es_title", "")
-current_es_highlight = st.session_state.get("current_highlight::ES", "")
-current_es_legacy = st.session_state.get("current_legacy_title::ES", "")
-es_can_confirm = render_title_length_box(current_es_value, "ES", current_es_highlight)
-if current_es_value:
-    st.markdown("#### 新手一键确认区")
-    st.info(f"当前AI推荐标题：{current_es_value}\n\n中文快看：{st.session_state.get('selected_es_title_zh','') or clean_display_zh('', current_es_value)}")
-    if st.button("✅ 一键确认当前 ES 推荐标题+商品亮点", disabled=not es_can_confirm, type="primary"):
-        title = normalize_title(current_es_value, "ES")
-        highlight = clean_text(current_es_highlight)
-        legacy = normalize_title(current_es_legacy, "ES")[:LEGACY_TITLE_LIMIT]
-        infer_intent_from_instruction(st.session_state.get("es_title_chat", ""), title + " " + highlight)
-        st.session_state["selected_es_title"] = title
-        st.session_state["current_highlight::ES"] = highlight
-        st.session_state["current_legacy_title::ES"] = legacy
-        st.session_state.setdefault("confirmed_titles", {})["ES"] = title
-        st.session_state.setdefault("confirmed_highlights", {})["ES"] = highlight
-        st.session_state.setdefault("confirmed_legacy_titles", {})["ES"] = legacy
-        zh = st.session_state.get("selected_es_title_zh") or "已按当前 ES 短标题确认，请以标题原文为准。"
-        st.session_state.setdefault("confirmed_title_zh", {})["ES"] = zh
-        st.session_state.setdefault("confirmed_highlight_zh", {})["ES"] = st.session_state.get("current_highlight_zh::ES", "")
-        st.session_state["compressed_master_cache"] = ""
-        st.session_state["compressed_master_signature"] = ""
-        record_rule_step("ES确认后生成压缩母版", "规则处理：后续多国只使用压缩母版")
-        _ = compressed_master_text(refresh=True)
-        st.success("ES 短标题和商品亮点已确认，压缩母版已刷新")
-        st.rerun()
-else:
-    st.caption("先生成 ES 标题候选，系统会自动推荐一个可确认标题。")
+es_edit_key = current_title_widget_key("ES")
+edited_es_title = st.text_area("当前 ES 标题（这里就是最终确认对象，可手动微调）", value=current_es_value, key=es_edit_key, height=90)
+es_can_confirm = render_title_length_box(edited_es_title, "ES")
+if st.session_state.get("selected_es_title_zh"):
+    st.markdown(f"<div class='zhbox'><b>当前中文解释：</b>{html.escape(st.session_state.get('selected_es_title_zh',''))}</div>", unsafe_allow_html=True)
 
-with st.expander("高级编辑 / 重生 ES 标题（主管或熟手使用）", expanded=False):
-    es_edit_key = current_title_widget_key("ES")
-    edited_es_title = st.text_area("当前 ES 短标题（≤75字符，最终确认对象）", value=current_es_value, key=es_edit_key, height=70)
-    edited_es_highlight = st.text_area("当前 ES 商品亮点（≤125字符，标题放不下的核心卖点）", value=current_es_highlight, key=f"highlight_edit::ES::{st.session_state.get('title_edit_version::ES',0)}", height=80)
-    edited_es_legacy = st.text_area("传统长标题参考（≤200字符，可选，不作为新规主标题）", value=current_es_legacy, key=f"legacy_title_edit::ES::{st.session_state.get('title_edit_version::ES',0)}", height=80)
-    es_can_confirm_edit = render_title_length_box(edited_es_title, "ES", edited_es_highlight)
-    if st.session_state.get("selected_es_title_zh"):
-        st.markdown(f"<div class='zhbox'><b>当前标题中文：</b>{html.escape(st.session_state.get('selected_es_title_zh',''))}</div>", unsafe_allow_html=True)
-    if st.session_state.get("current_highlight_zh::ES"):
-        st.markdown(f"<div class='zhbox'><b>当前亮点中文：</b>{html.escape(st.session_state.get('current_highlight_zh::ES',''))}</div>", unsafe_allow_html=True)
-
-    st.text_area("针对当前标题的中文修改要求", key="es_title_chat", height=80, placeholder="例如：短标题保留产品类型和IP54；商品亮点加入户外/浴室/上下出光；传统长标题自然即可。")
-    es_btn1, es_btn2, es_btn3 = st.columns([1, 1, 1])
-    with es_btn1:
-        if st.button("基于当前标题生成下一轮 3 个 ES 选项"):
-            try:
-                base = normalize_title(edited_es_title, "ES")
-                st.session_state.setdefault("title_history", {}).setdefault("ES", []).append(base)
-                instr = f"请只基于以下当前标题优化，生成新一轮3个候选；不要回到原始标题重新写。\n当前标题：{base}\n修改要求：{st.session_state.get('es_title_chat','') or '在不改变产品事实的前提下，优化75字符短标题和125字符商品亮点，并生成一个200字符以内传统长标题参考。'}"
-                infer_intent_from_instruction(st.session_state.get('es_title_chat',''), base)
-                with st.spinner("正在根据当前标题生成下一轮 ES 候选..."):
-                    raw = llm(es_title_prompt(instr), "你是 Amazon.es 灯具标题专家。输出严格 JSON。", label="ES标题下一轮")
-                    cands = parse_candidates(raw, "ES")
-                    cands = maybe_auto_compress_candidates("ES", cands, "ES下一轮")
-                    st.session_state["es_title_candidates"] = cands
-                    st.session_state["es_cand_version"] = int(st.session_state.get("es_cand_version", 0)) + 1
-                    if cands:
-                        auto_select_best_candidate("ES", cands)
-                    notify_done("ES下一轮标题已生成")
-                    st.rerun()
-            except Exception as e:
-                st.error(str(e))
-    with es_btn2:
-        if st.button("回退 ES 标题"):
-            hist = st.session_state.setdefault("title_history", {}).setdefault("ES", [])
-            if hist:
-                prev = hist.pop()
-                set_current_title("ES", prev, zh_translate_title(prev, "ES"))
+# Step 2D: chat refine and confirm
+st.text_area("针对当前标题的中文修改要求", key="es_title_chat", height=80, placeholder="例如：保留三头吊灯和75cm；删掉过多场景；更突出餐桌和厨房岛台；控制在190字符以内。")
+es_btn1, es_btn2, es_btn3 = st.columns([1, 1, 1])
+with es_btn1:
+    if st.button("基于当前标题生成下一轮 3 个 ES 选项"):
+        try:
+            base = normalize_title(edited_es_title, "ES")
+            st.session_state.setdefault("title_history", {}).setdefault("ES", []).append(base)
+            instr = f"请只基于以下当前标题优化，生成新一轮3个候选；不要回到原始标题重新写。\n当前标题：{base}\n修改要求：{st.session_state.get('es_title_chat','') or '在不改变产品事实的前提下，提高亚马逊标题质量，并保持200字符以内。'}"
+            infer_intent_from_instruction(st.session_state.get('es_title_chat',''), base)
+            with st.spinner("正在根据当前标题生成下一轮 ES 候选..."):
+                raw = llm(es_title_prompt(instr), "你是 Amazon.es 灯具标题专家。输出严格 JSON。", label="ES标题下一轮")
+                cands = parse_candidates(raw, "ES")
+                cands = maybe_auto_compress_candidates("ES", cands, "ES下一轮")
+                st.session_state["es_title_candidates"] = cands
+                st.session_state["es_cand_version"] = int(st.session_state.get("es_cand_version", 0)) + 1
+                if cands:
+                    auto_select_best_candidate("ES", cands)
+                notify_done("ES下一轮标题已生成")
                 st.rerun()
-    with es_btn3:
-        if st.button("确认当前 ES 短标题+商品亮点", disabled=not es_can_confirm_edit):
-            title = normalize_title(edited_es_title, "ES")
-            highlight = clean_text(edited_es_highlight)
-            legacy = normalize_title(edited_es_legacy, "ES")[:LEGACY_TITLE_LIMIT]
-            infer_intent_from_instruction(st.session_state.get("es_title_chat", ""), title + " " + highlight)
-            st.session_state["selected_es_title"] = title
-            st.session_state["current_highlight::ES"] = highlight
-            st.session_state["current_legacy_title::ES"] = legacy
-            st.session_state.setdefault("confirmed_titles", {})["ES"] = title
-            st.session_state.setdefault("confirmed_highlights", {})["ES"] = highlight
-            st.session_state.setdefault("confirmed_legacy_titles", {})["ES"] = legacy
-            zh = st.session_state.get("selected_es_title_zh") or "已按当前 ES 短标题确认，请以标题原文为准。"
-            st.session_state.setdefault("confirmed_title_zh", {})["ES"] = zh
-            st.session_state.setdefault("confirmed_highlight_zh", {})["ES"] = st.session_state.get("current_highlight_zh::ES", "")
-            st.session_state["compressed_master_cache"] = ""
-            st.session_state["compressed_master_signature"] = ""
-            record_rule_step("ES确认后生成压缩母版", "规则处理：后续多国只使用压缩母版")
-            _ = compressed_master_text(refresh=True)
-            st.success("ES 短标题和商品亮点已确认，压缩母版已刷新")
+        except Exception as e:
+            st.error(str(e))
+with es_btn2:
+    if st.button("回退 ES 标题"):
+        hist = st.session_state.setdefault("title_history", {}).setdefault("ES", [])
+        if hist:
+            prev = hist.pop()
+            set_current_title("ES", prev, zh_translate_title(prev, "ES"))
             st.rerun()
-    if not es_can_confirm_edit and edited_es_title:
-        st.caption("短标题必须≤75字符，商品亮点必须≤125字符，且不能含中文/禁词。")
+with es_btn3:
+    if st.button("确认当前 ES 标题", disabled=not es_can_confirm):
+        title = normalize_title(edited_es_title, "ES")
+        infer_intent_from_instruction(st.session_state.get("es_title_chat", ""), title)
+        st.session_state["selected_es_title"] = title
+        st.session_state.setdefault("confirmed_titles", {})["ES"] = title
+        zh = st.session_state.get("selected_es_title_zh") or "已按当前 ES 标题确认，请以标题原文为准。"
+        st.session_state.setdefault("confirmed_title_zh", {})["ES"] = zh
+        st.success("ES 标题已确认")
+        st.rerun()
+if not es_can_confirm and edited_es_title:
+    st.caption("标题超过200字符、含中文或为空时不能确认。请手动缩短，或在中文修改要求里写“压缩到190字符以内”。")
 
 
 # ------------------------- ES human intent ledger UI -------------------------
@@ -2993,35 +2179,26 @@ else:
         if st.session_state.get("confirmed_titles", {}).get(l):
             continue
         cur = st.session_state.get(f"current_title::{l}", "")
-        if cur and auto_confirmable_title(cur, l, st.session_state.get(f"current_highlight::{l}", "")):
+        if cur and auto_confirmable_title(cur, l):
             auto_ready.append(l)
         elif cur:
             auto_blocked.append(l)
     if auto_ready:
         st.markdown(f"<div class='ok'>AI推荐可直接确认：{', '.join(auto_ready)}</div>", unsafe_allow_html=True)
-        if st.button(f"确认全部无风险短标题+商品亮点（{len(auto_ready)} 个）"):
+        if st.button(f"确认全部无风险标题（{len(auto_ready)} 个）"):
             for l in auto_ready:
                 title = normalize_title(st.session_state.get(f"current_title::{l}", ""), l)
                 st.session_state.setdefault("confirmed_titles", {})[l] = title
                 st.session_state.setdefault("confirmed_title_zh", {})[l] = st.session_state.get(f"current_title_zh::{l}", "")
-                st.session_state.setdefault("confirmed_highlights", {})[l] = st.session_state.get(f"current_highlight::{l}", "")
-                st.session_state.setdefault("confirmed_highlight_zh", {})[l] = st.session_state.get(f"current_highlight_zh::{l}", "")
-                st.session_state.setdefault("confirmed_legacy_titles", {})[l] = st.session_state.get(f"current_legacy_title::{l}", "")
-            st.success("已确认全部无风险短标题和商品亮点。")
+            st.success("已确认全部无风险标题。")
             st.rerun()
     if auto_blocked:
         st.markdown(f"<div class='warn'>这些国家仍需人工检查（硬风险或真实缺失）：{', '.join(auto_blocked)}</div>", unsafe_allow_html=True)
 
     def generate_batch_for_langs(langs_to_gen: List[str], label: str) -> None:
-        original_langs = list(langs_to_gen)
-        langs_to_gen = [l for l in langs_to_gen if not st.session_state.get("confirmed_titles", {}).get(l)]
-        skipped = [l for l in original_langs if l not in langs_to_gen]
-        if skipped:
-            record_rule_step("跳过已确认国家标题", "已确认不重生：" + ", ".join(skipped))
         if not langs_to_gen:
             st.info("没有需要处理的国家。")
             return
-        _ = compressed_master_text(refresh=True)
         try:
             with st.spinner(f"正在批量生成/重生多国标题候选：{', '.join(langs_to_gen)}..."):
                 raw = llm(batch_lang_title_prompt(langs_to_gen), "你是多国 Amazon 灯具标题本地化专家。必须执行ES人工意图记录，输出严格 JSON。", label=label)
@@ -3067,10 +2244,8 @@ else:
             confirmed = st.session_state.get("confirmed_titles", {}).get(lang, "")
             if confirmed:
                 st.markdown("<span class='status-pill s-ok'>已确认</span>", unsafe_allow_html=True)
-                st.text_area("已确认短标题", value=confirmed, key=f"confirmed_show::{lang}", height=70, disabled=True)
-                st.text_area("已确认商品亮点", value=st.session_state.get("confirmed_highlights", {}).get(lang, ""), key=f"confirmed_highlight_show::{lang}", height=80, disabled=True)
-                st.text_area("传统长标题参考", value=st.session_state.get("confirmed_legacy_titles", {}).get(lang, ""), key=f"confirmed_legacy_show::{lang}", height=80, disabled=True)
-                st.markdown(f"<div class='zhbox'><b>标题中文：</b>{html.escape(st.session_state.get('confirmed_title_zh', {}).get(lang,''))}<br><b>亮点中文：</b>{html.escape(st.session_state.get('confirmed_highlight_zh', {}).get(lang,''))}</div>", unsafe_allow_html=True)
+                st.text_area("已确认标题", value=confirmed, key=f"confirmed_show::{lang}", height=90, disabled=True)
+                st.markdown(f"<div class='zhbox'><b>中文解释：</b>{html.escape(st.session_state.get('confirmed_title_zh', {}).get(lang,''))}</div>", unsafe_allow_html=True)
                 if st.button(f"取消确认并继续修改 {lang}", key=f"unlock::{lang}"):
                     st.session_state.setdefault("confirmed_titles", {}).pop(lang, None)
                     st.session_state.setdefault("confirmed_title_zh", {}).pop(lang, None)
@@ -3103,84 +2278,50 @@ else:
             current_key = f"current_title::{lang}"
             zh_key = f"current_title_zh::{lang}"
             current_value = st.session_state.get(current_key, "")
-            current_highlight = st.session_state.get(f"current_highlight::{lang}", "")
-            current_legacy = st.session_state.get(f"current_legacy_title::{lang}", "")
-            can_confirm = render_title_length_box(current_value, lang, current_highlight)
-            if current_value:
-                st.markdown("#### 新手一键确认区")
-                st.info(f"当前AI推荐标题：{current_value}\n\n中文快看：{st.session_state.get(zh_key,'') or clean_display_zh('', current_value)}")
-                if st.button(f"✅ 一键确认当前 {lang} 推荐标题+亮点", key=f"quick_confirm::{lang}", disabled=not can_confirm, type="primary"):
-                    title = normalize_title(current_value, lang)
-                    highlight = clean_text(current_highlight)
-                    legacy = normalize_title(current_legacy, lang)[:LEGACY_TITLE_LIMIT]
-                    st.session_state[current_key] = title
-                    st.session_state[f"current_highlight::{lang}"] = highlight
-                    st.session_state[f"current_legacy_title::{lang}"] = legacy
-                    st.session_state.setdefault("confirmed_titles", {})[lang] = title
-                    st.session_state.setdefault("confirmed_highlights", {})[lang] = highlight
-                    st.session_state.setdefault("confirmed_legacy_titles", {})[lang] = legacy
-                    zh = st.session_state.get(zh_key) or "已按当前短标题确认，请以标题原文为准。"
-                    st.session_state.setdefault("confirmed_title_zh", {})[lang] = zh
-                    st.session_state.setdefault("confirmed_highlight_zh", {})[lang] = st.session_state.get(f"current_highlight_zh::{lang}", "")
-                    st.success(f"{lang} 短标题和商品亮点已确认")
-                    st.rerun()
-            else:
-                st.caption("先生成该国家标题候选，系统会自动推荐一个可确认标题。")
+            edit_key = current_title_widget_key(lang)
+            edited_title = st.text_area("当前标题（这里就是确认对象，可手动微调）", value=current_value, key=edit_key, height=90)
+            can_confirm = render_title_length_box(edited_title, lang)
+            if st.session_state.get(zh_key):
+                st.markdown(f"<div class='zhbox'><b>当前中文解释：</b>{html.escape(st.session_state.get(zh_key,''))}</div>", unsafe_allow_html=True)
 
-            with st.expander(f"高级编辑 / 重生 {lang} 标题（主管或熟手使用）", expanded=False):
-                edit_key = current_title_widget_key(lang)
-                edited_title = st.text_area("当前短标题（≤75字符，确认对象）", value=current_value, key=edit_key, height=70)
-                edited_highlight = st.text_area("当前商品亮点（≤125字符）", value=current_highlight, key=f"highlight_edit::{lang}::{st.session_state.get(f'title_edit_version::{lang}',0)}", height=80)
-                edited_legacy = st.text_area("传统长标题参考（≤200字符，可选）", value=current_legacy, key=f"legacy_title_edit::{lang}::{st.session_state.get(f'title_edit_version::{lang}',0)}", height=80)
-                can_confirm_edit = render_title_length_box(edited_title, lang, edited_highlight)
-                if st.session_state.get(zh_key):
-                    st.markdown(f"<div class='zhbox'><b>当前标题中文：</b>{html.escape(st.session_state.get(zh_key,''))}<br><b>当前亮点中文：</b>{html.escape(st.session_state.get(f'current_highlight_zh::{lang}',''))}</div>", unsafe_allow_html=True)
-
-                st.text_area("针对当前标题/亮点的中文修改要求", key=f"chat::{lang}", height=80, placeholder="例如：短标题保留产品类型+IP54；亮点加入浴室/遮蔽户外；删除重复词。")
-                c1, c2, c3 = st.columns([1, 1, 1])
-                with c1:
-                    if st.button(f"基于当前标题生成下一轮 {lang} 3 个选项", key=f"refine::{lang}"):
-                        try:
-                            base = normalize_title(edited_title, lang)
-                            st.session_state.setdefault("title_history", {}).setdefault(lang, []).append(base)
-                            instr = f"请只基于以下当前标题优化，生成新一轮3个候选；不要回到ES标题重新直译。\n当前标题：{base}\n修改要求：{st.session_state.get(f'chat::{lang}', '') or '在不改变产品事实的前提下，优化75字符短标题和125字符商品亮点，并生成200字符以内传统长标题参考。'}"
-                            with st.spinner(f"正在优化 {lang} 标题..."):
-                                raw = llm(lang_title_prompt(lang, instr), f"你是 {LANGS[lang]['market']} 灯具标题本地化专家。输出严格 JSON。", label=f"{lang}标题下一轮")
-                                cands_new = parse_candidates(raw, lang)
-                                cands_new = maybe_auto_compress_candidates(lang, cands_new, f"{lang}下一轮")
-                                st.session_state.setdefault("title_candidates", {})[lang] = cands_new
-                                bump_lang_version(lang)
-                                if cands_new:
-                                    auto_select_best_candidate(lang, cands_new)
-                                notify_done(f"{lang} 下一轮标题已生成")
-                                st.rerun()
-                        except Exception as e:
-                            st.error(str(e))
-                with c2:
-                    if st.button(f"回退 {lang}", key=f"undo::{lang}"):
-                        hist = st.session_state.setdefault("title_history", {}).setdefault(lang, [])
-                        if hist:
-                            prev = hist.pop()
-                            set_current_title(lang, prev, zh_translate_title(prev, lang))
+            st.text_area("针对当前标题的中文修改要求", key=f"chat::{lang}", height=80, placeholder="例如：加入餐桌关键词，但压缩到190字符以内；保留3灯和75cm；删掉卧室；语序更自然。")
+            c1, c2, c3 = st.columns([1, 1, 1])
+            with c1:
+                if st.button(f"基于当前标题生成下一轮 {lang} 3 个选项", key=f"refine::{lang}"):
+                    try:
+                        base = normalize_title(edited_title, lang)
+                        st.session_state.setdefault("title_history", {}).setdefault(lang, []).append(base)
+                        instr = f"请只基于以下当前标题优化，生成新一轮3个候选；不要回到ES标题重新直译。\n当前标题：{base}\n修改要求：{st.session_state.get(f'chat::{lang}', '') or '在不改变产品事实的前提下，提高本地Amazon标题质量，并保持200字符以内。'}"
+                        with st.spinner(f"正在优化 {lang} 标题..."):
+                            raw = llm(lang_title_prompt(lang, instr), f"你是 {LANGS[lang]['market']} 灯具标题本地化专家。输出严格 JSON。", label=f"{lang}标题下一轮")
+                            cands_new = parse_candidates(raw, lang)
+                            cands_new = maybe_auto_compress_candidates(lang, cands_new, f"{lang}下一轮")
+                            st.session_state.setdefault("title_candidates", {})[lang] = cands_new
+                            bump_lang_version(lang)
+                            if cands_new:
+                                auto_select_best_candidate(lang, cands_new)
+                            notify_done(f"{lang} 下一轮标题已生成")
                             st.rerun()
-                with c3:
-                    if st.button(f"确认 {lang} 短标题+亮点", key=f"confirm::{lang}", disabled=not can_confirm_edit):
-                        title = normalize_title(edited_title, lang)
-                        highlight = clean_text(edited_highlight)
-                        legacy = normalize_title(edited_legacy, lang)[:LEGACY_TITLE_LIMIT]
-                        st.session_state[current_key] = title
-                        st.session_state[f"current_highlight::{lang}"] = highlight
-                        st.session_state[f"current_legacy_title::{lang}"] = legacy
-                        st.session_state.setdefault("confirmed_titles", {})[lang] = title
-                        st.session_state.setdefault("confirmed_highlights", {})[lang] = highlight
-                        st.session_state.setdefault("confirmed_legacy_titles", {})[lang] = legacy
-                        zh = st.session_state.get(zh_key) or "已按当前短标题确认，请以标题原文为准。"
-                        st.session_state.setdefault("confirmed_title_zh", {})[lang] = zh
-                        st.session_state.setdefault("confirmed_highlight_zh", {})[lang] = st.session_state.get(f"current_highlight_zh::{lang}", "")
-                        st.success(f"{lang} 短标题和商品亮点已确认")
+                    except Exception as e:
+                        st.error(str(e))
+            with c2:
+                if st.button(f"回退 {lang}", key=f"undo::{lang}"):
+                    hist = st.session_state.setdefault("title_history", {}).setdefault(lang, [])
+                    if hist:
+                        prev = hist.pop()
+                        set_current_title(lang, prev, zh_translate_title(prev, lang))
                         st.rerun()
-                if not can_confirm_edit and edited_title:
-                    st.caption("短标题必须≤75字符，商品亮点必须≤125字符，且不能含中文/禁词。")
+            with c3:
+                if st.button(f"确认 {lang} 标题", key=f"confirm::{lang}", disabled=not can_confirm):
+                    title = normalize_title(edited_title, lang)
+                    st.session_state[current_key] = title
+                    st.session_state.setdefault("confirmed_titles", {})[lang] = title
+                    zh = st.session_state.get(zh_key) or "已按当前标题确认，请以标题原文为准。"
+                    st.session_state.setdefault("confirmed_title_zh", {})[lang] = zh
+                    st.success(f"{lang} 标题已确认")
+                    st.rerun()
+            if not can_confirm and edited_title:
+                st.caption("标题超过200字符、含中文或为空时不能确认。请手动缩短，或要求 AI 压缩到190字符以内。")
 # ------------------------- Section 4: generate content -------------------------
 st.header("4）标题确认后生成正文")
 confirmed_titles = st.session_state.get("confirmed_titles", {})
@@ -3194,68 +2335,24 @@ if missing:
     st.warning("还有标题未确认：" + ", ".join(missing) + "。标题未确认前不建议生成正文。")
 else:
     include_aplus = True
-    st.markdown("<div class='ok'>正文将固定生成完整包：短标题 + 商品亮点 + 传统长标题参考 + 五点 + 描述 + Search Terms + A+。V18.2.8：固定五点顺序模板；中文解释精简但完整；不新增上报卡；天然木/手工编织不过度纠结，明确仿木/MDF才降级。</div>", unsafe_allow_html=True)
-    already_done = [l for l in selected_langs if is_listing_complete(st.session_state.get("listings", {}).get(l, {}))]
-    incomplete_existing = [l for l in selected_langs if st.session_state.get("listings", {}).get(l) and not is_listing_complete(st.session_state.get("listings", {}).get(l, {}))]
-    if already_done and st.session_state.get("skip_existing_listings", True):
-        st.markdown(f"<div class='warn'>已生成且完整的国家将跳过：{html.escape(', '.join(already_done))}</div>", unsafe_allow_html=True)
-    if incomplete_existing:
-        st.markdown(f"<div class='export-warning'>发现不完整正文，将自动重跑，不会跳过：{html.escape(', '.join(incomplete_existing))}</div>", unsafe_allow_html=True)
-    if st.button("逐国生成完整正文包（含 A+，标题和商品亮点不再修改）"):
-        _ = compressed_master_text(refresh=True)
-        success_count = 0
-        fail_count = 0
+    st.markdown("<div class='ok'>正文将固定生成完整包：标题 + 五点 + 描述 + Search Terms + A+，不再提供标准包选项，避免漏选。</div>", unsafe_allow_html=True)
+    if st.button("逐国生成完整正文包（含 A+，标题不再修改）"):
         for lang in selected_langs:
-            existing = st.session_state.get("listings", {}).get(lang, {})
-            if st.session_state.get("skip_existing_listings", True) and is_listing_complete(existing):
-                record_rule_step(f"{lang}正文跳过", "已生成且通过完整性校验，不重复消耗token")
-                continue
             try:
                 with st.spinner(f"正在生成 {lang} 正文..."):
                     raw = llm(listing_prompt(lang, include_aplus), f"你是 {LANGS[lang]['market']} 灯具 Listing 本地文案专家。输出严格 JSON。", label=f"{lang}正文生成")
                     data = safe_json(raw, {})
                     if not isinstance(data, dict):
                         raise ValueError("JSON解析失败")
-                    cleaned = clean_listing(data, lang)
-                    if st.session_state.get("generate_listing_zh", True) or not listing_zh_is_good(cleaned):
-                        cleaned = enrich_listing_with_zh(lang, cleaned)
-                    errors = listing_validation_errors(cleaned)
-                    if errors:
-                        fail_count += 1
-                        st.session_state.setdefault("listings", {}).pop(lang, None)
-                        record_rule_step(f"{lang}正文校验失败", "未保存：" + "；".join(errors))
-                        st.error(f"{lang} 正文不完整，未保存：" + "；".join(errors))
-                        continue
-                    st.session_state.setdefault("listings", {})[lang] = cleaned
-                    success_count += 1
+                    st.session_state.setdefault("listings", {})[lang] = clean_listing(data, lang)
             except Exception as e:
-                fail_count += 1
                 st.error(f"{lang} 失败：{e}")
-        notify_done(f"正文生成完成：成功 {success_count}，失败 {fail_count}")
+        notify_done("正文生成完成")
 
 # ------------------------- Section 5: preview and export -------------------------
 st.header("5）预览与导出")
 listings = st.session_state.get("listings", {})
 if listings:
-    st.markdown("### 主管审批摘要")
-    review_rows = []
-    for l in [x for x in selected_langs if listings.get(x)]:
-        d = listings[l]
-        errors = listing_validation_errors(d)
-        review_rows.append({
-            "国家": l,
-            "状态": "✅ 可审" if not errors else "❌ 不完整",
-            "标题": f"{len(clean_text(d.get('title','')))}/{TITLE_LIMIT}",
-            "亮点": f"{len(clean_text(d.get('item_highlights','')))}/{HIGHLIGHT_LIMIT}",
-            "五点": len(d.get('bullets', []) or []),
-            "A+": len(d.get('aplus', []) or []),
-            "主管关注": "；".join(errors[:2]) if errors else clean_text(d.get('item_highlights',''))[:80],
-        })
-    st.table(review_rows)
-    st.caption("主管主要看：状态是否✅、商品亮点是否包含核心卖点、标题是否接近上限、是否有材质/安装/灯泡风险。详细文案在下方各国家标签页。")
-    invalid_langs = [l for l in selected_langs if listings.get(l) and not is_listing_complete(listings.get(l, {}))]
-    if invalid_langs:
-        st.markdown(f"<div class='export-warning'>以下国家正文不完整，不会导出，请重跑：{html.escape(', '.join(invalid_langs))}</div>", unsafe_allow_html=True)
     tabs = st.tabs([l for l in selected_langs if listings.get(l)])
     for tab, lang in zip(tabs, [l for l in selected_langs if listings.get(l)]):
         with tab:
@@ -3264,7 +2361,7 @@ if listings:
     st.download_button(
         "下载 ZIP（只含 listing）",
         data=make_zip(),
-        file_name=f"{st.session_state.get('sku','SKU')}_{date.today().isoformat()}_AMAZON_LISTING_V18_2_8.zip",
+        file_name=f"{st.session_state.get('sku','SKU')}_{date.today().isoformat()}_AMAZON_LISTING_V17.zip",
         mime="application/zip",
     )
 else:
